@@ -1,10 +1,10 @@
 [package]
-name = "{{ project-name }}"
+name = "singularity"
 version = "0.1.0"
-edition = "2024"
-license = "{{ license }}"
-description = "{{ description }}"
-repository = "{{ repository-url }}"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Unified quick-settings panel applet for COSMIC"
+repository = "https://github.com/sreevikramr/singularity"
 
 [dependencies]
 futures-util = "0.3.31"
@@ -18,20 +18,13 @@ features = ["fluent-system", "desktop-requester"]
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
-# See https://github.com/pop-os/libcosmic/blob/master/Cargo.toml for available features.
 features = [
-    # Applet support
     "applet",
     "applet-token",
-    # Uses cosmic-settings-daemon to watch for config file changes
     "dbus-config",
-    # Support creating additional application windows.
     "multi-window",
-    # Uses tokio as the executor for the runtime
     "tokio",
-    # Add Wayland support to winit
     "wayland",
-    # Windowing support for X11, Windows, Mac, & Redox
     "winit",
 ]
 

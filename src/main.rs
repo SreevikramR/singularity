@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: {{ license }}
+// SPDX-License-Identifier: GPL-3.0-only
 
 mod app;
 mod config;
@@ -11,6 +11,6 @@ fn main() -> cosmic::iced::Result {
     // Enable localizations to be applied.
     i18n::init(&requested_languages);
 
-    // Starts the applet's event loop with `()` as the application's flags.
+    // Starts the applet's event loop.
     cosmic::applet::run::<app::AppModel>(())
 }

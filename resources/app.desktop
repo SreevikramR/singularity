@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name={{ project-name | title_case }}
-Comment={{ description }}
+Name=Singularity
+Comment=Unified quick-settings panel applet for COSMIC
 Type=Application
-Icon={{ appid }}
-Exec={{ project-name }} %F
+Icon=com.github.sreevikramr.singularity
+Exec=singularity %F
 Terminal=false
 StartupNotify=true
 Categories=COSMIC

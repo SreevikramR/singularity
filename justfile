@@ -1,6 +1,6 @@
-name := '{{ project-name }}'
-appid := '{{ appid }}'
-{% raw %}
+name := 'singularity'
+appid := 'com.github.sreevikramr.singularity'
+
 rootdir := ''
 prefix := '/usr'
 
@@ -79,4 +79,3 @@ tag version:
     git add Cargo.lock
     git commit -m 'release: {{version}}'
     git tag -a {{version}} -m ''
-{% endraw %}
