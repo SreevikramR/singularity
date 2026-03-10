@@ -2,7 +2,7 @@
 //
 // Main dropdown view: the primary AppView::Main layout.
 // Section A: Split-button grid (left) + MPRIS media card (right)
-// Section B: Volume + Brightness sliders
+// Section B: Volume (with audio submenu) + Brightness + Keyboard Brightness sliders
 // Section C: Footer with battery info + power buttons
 
 use crate::app::{AppModel, AppView, Message, PowerProfile};
@@ -18,6 +18,7 @@ use mpris2_zbus::player::PlaybackStatus;
 // ── Split-button tile ────────────────────────────────────────────────────────
 
 /// A split button: left side toggles, right side (chevron) navigates.
+/// All tiles have uniform height and vertically centered content.
 fn split_tile<'a>(
     icon_name: &'a str,
     label: String,
@@ -42,28 +43,39 @@ fn split_tile<'a>(
         .width(Length::Shrink)
         .into();
 
-    // Left part: icon + label (toggles)
-    let left_content: Element<'a, Message> = column![icon_widget, label_widget]
-        .spacing(4)
-        .align_x(Alignment::Center)
-        .width(Length::Fill)
-        .into();
+    // Icon + label, vertically and horizontally centered within the button
+    let left_content: Element<'a, Message> = container(
+        column![icon_widget, label_widget]
+            .spacing(4)
+            .align_x(Alignment::Center)
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .into();
 
     let left_btn = button::custom(left_content)
         .class(make_style())
         .on_press(on_toggle)
         .width(Length::Fill)
+        .height(Length::Fixed(64.0))
         .padding([8, 4]);
 
     if let Some(nav_msg) = on_navigate {
-        let chevron: Element<'a, Message> = icon::from_name("go-next-symbolic")
-            .size(12)
-            .symbolic(true)
-            .into();
+        let chevron: Element<'a, Message> = container(
+            icon::from_name("go-next-symbolic")
+                .size(12)
+                .symbolic(true)
+        )
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .into();
 
         let right_btn = button::custom(chevron)
             .class(make_style())
             .on_press(nav_msg)
+            .height(Length::Fixed(64.0))
             .padding([8, 4]);
 
         row![left_btn, right_btn]
@@ -78,95 +90,105 @@ fn split_tile<'a>(
 // ── Media card ───────────────────────────────────────────────────────────────
 
 fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> {
-    match player_status {
+    // Extract title and artist if available
+    let (title, artist) = match player_status {
         Some(status) => {
-            let title = status
+            let t = status
                 .title
                 .as_deref()
                 .unwrap_or("Unknown Title")
                 .to_string();
-            let artist = status
+            let a = status
                 .artists
                 .as_ref()
                 .and_then(|a| a.first())
                 .map(|a| a.to_string())
                 .unwrap_or_else(|| "Unknown Artist".to_string());
-
-            let title_text: Element<'a, Message> = text::body(title)
-                .width(Length::Fill)
-                .into();
-
-            let artist_text: Element<'a, Message> = text::caption(artist)
-                .width(Length::Fill)
-                .into();
-
-            // Transport controls
-            let mut controls = row![].spacing(8).align_y(Alignment::Center);
-
-            if status.can_go_previous {
-                controls = controls.push(
-                    button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true))
-                        .on_press(Message::MediaPrevious)
-                        .padding(4),
-                );
-            }
-
-            let play_pause_icon = match status.status {
-                PlaybackStatus::Playing => "media-playback-pause-symbolic",
-                _ => "media-playback-start-symbolic",
-            };
-            let play_pause_msg = match status.status {
-                PlaybackStatus::Playing => Message::MediaPause,
-                _ => Message::MediaPlay,
-            };
-            controls = controls.push(
-                button::icon(icon::from_name(play_pause_icon).size(20).symbolic(true))
-                    .on_press(play_pause_msg)
-                    .padding(4),
-            );
-
-            if status.can_go_next {
-                controls = controls.push(
-                    button::icon(icon::from_name("media-skip-forward-symbolic").size(16).symbolic(true))
-                        .on_press(Message::MediaNext)
-                        .padding(4),
-                );
-            }
-
-            let card_content: Element<'a, Message> = column![
-                title_text,
-                artist_text,
-                controls,
-            ]
-            .spacing(6)
-            .padding(10)
-            .width(Length::Fill)
-            .into();
-
-            container(card_content)
-                .class(theme::Container::Primary)
-                .width(Length::Fill)
-                .into()
+            (t, a)
         }
-        None => {
-            let no_media: Element<'a, Message> = column![
-                icon::from_name("applications-multimedia-symbolic")
-                    .size(24)
-                    .symbolic(true),
-                text::caption(fl!("no-media")),
-            ]
-            .spacing(8)
+        None => (fl!("no-media"), String::new()),
+    };
+
+    // Placeholder album art icon — centered
+    let album_art: Element<'a, Message> = container(
+        icon::from_name("applications-multimedia-symbolic")
+            .size(48)
+            .symbolic(true)
+    )
+    .width(Length::Fill)
+    .align_x(Alignment::Center)
+    .padding([4, 0])
+    .into();
+
+    let title_text: Element<'a, Message> = text::body(title)
+        .width(Length::Fill)
+        .align_x(Alignment::Center)
+        .into();
+
+    let mut info_col = column![title_text]
+        .spacing(2)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+
+    if !artist.is_empty() {
+        let artist_text: Element<'a, Message> = text::caption(artist)
+            .width(Length::Fill)
             .align_x(Alignment::Center)
-            .width(Length::Fill)
-            .padding(16)
             .into();
-
-            container(no_media)
-                .class(theme::Container::Primary)
-                .width(Length::Fill)
-                .into()
-        }
+        info_col = info_col.push(artist_text);
     }
+
+    // Transport controls — always visible, horizontally centered
+    let is_playing = player_status
+        .as_ref()
+        .map(|s| matches!(s.status, PlaybackStatus::Playing))
+        .unwrap_or(false);
+
+    let play_pause_icon = if is_playing {
+        "media-playback-pause-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    };
+    let play_pause_msg = if is_playing {
+        Message::MediaPause
+    } else {
+        Message::MediaPlay
+    };
+
+    let controls: Element<'a, Message> = container(
+        row![
+            button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true))
+                .on_press(Message::MediaPrevious)
+                .padding(4),
+            button::icon(icon::from_name(play_pause_icon).size(20).symbolic(true))
+                .on_press(play_pause_msg)
+                .padding(4),
+            button::icon(icon::from_name("media-skip-forward-symbolic").size(16).symbolic(true))
+                .on_press(Message::MediaNext)
+                .padding(4),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+    )
+    .width(Length::Fill)
+    .align_x(Alignment::Center)
+    .into();
+
+    let card_content: Element<'a, Message> = column![
+        album_art,
+        info_col,
+        controls,
+    ]
+    .spacing(6)
+    .padding(10)
+    .width(Length::Fill)
+    .align_x(Alignment::Center)
+    .into();
+
+    container(card_content)
+        .class(theme::Container::Primary)
+        .width(Length::Fill)
+        .into()
 }
 
 // ── Main view assembly ───────────────────────────────────────────────────────
@@ -176,11 +198,11 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
 
     // ── Section A: Grid + Media ──────────────────────────────────────────
 
-    // 2×3 split-button grid
-    let power_label = match app.power_profile {
-        PowerProfile::Balanced => fl!("balanced"),
-        PowerProfile::Performance => fl!("performance"),
-        PowerProfile::PowerSaver => fl!("power-saver"),
+    // Dynamic power profile icon per state
+    let (power_icon, power_label) = match app.power_profile {
+        PowerProfile::Balanced => ("power-profile-balanced-symbolic", fl!("balanced")),
+        PowerProfile::Performance => ("power-profile-performance-symbolic", fl!("performance")),
+        PowerProfile::PowerSaver => ("power-profile-power-saver-symbolic", fl!("power-saver")),
     };
 
     let grid_row_1 = row![
@@ -204,7 +226,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
 
     let grid_row_2 = row![
         split_tile(
-            "power-profile-balanced-symbolic",
+            power_icon,
             power_label,
             true,
             Message::CyclePowerProfile,
@@ -227,7 +249,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             fl!("global-mute"),
             app.global_mute,
             Message::ToggleGlobalMute(!app.global_mute),
-            Some(Message::Navigate(AppView::AudioDetails)),
+            None,
         ),
         split_tile(
             "accessories-screenshot-symbolic",
@@ -253,6 +275,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
 
     // ── Section B: Sliders ───────────────────────────────────────────────
 
+    // Volume slider with mute toggle on left and audio submenu chevron on right
     let volume_icon = if app.volume == 0 || app.global_mute {
         "audio-volume-muted-symbolic"
     } else if app.volume < 33 {
@@ -269,11 +292,15 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             .padding(4),
         slider(0..=150, app.volume, Message::SetVolume)
             .width(Length::Fill),
+        button::icon(icon::from_name("go-next-symbolic").size(16).symbolic(true))
+            .on_press(Message::Navigate(AppView::AudioDetails))
+            .padding(4),
     ]
     .spacing(spacing.space_s)
     .align_y(Alignment::Center)
     .padding([0, spacing.space_xxs]);
 
+    // Screen brightness with icon
     let brightness_icon = if app.brightness < 33 {
         "display-brightness-low-symbolic"
     } else if app.brightness < 66 {
@@ -291,7 +318,19 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     .align_y(Alignment::Center)
     .padding([0, spacing.space_xxs]);
 
-    let section_b = column![volume_row, brightness_row]
+    // Keyboard brightness with icon
+    let kbd_icon = "keyboard-brightness-symbolic";
+
+    let kbd_brightness_row = row![
+        icon::from_name(kbd_icon).size(20).symbolic(true),
+        slider(0..=100, app.kbd_brightness, Message::SetKbdBrightness)
+            .width(Length::Fill),
+    ]
+    .spacing(spacing.space_s)
+    .align_y(Alignment::Center)
+    .padding([0, spacing.space_xxs]);
+
+    let section_b = column![volume_row, brightness_row, kbd_brightness_row]
         .spacing(spacing.space_xxs);
 
     // ── Section C: Footer ────────────────────────────────────────────────

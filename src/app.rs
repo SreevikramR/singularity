@@ -64,6 +64,7 @@ pub struct AppModel {
     // ── Sliders ──
     pub volume: u32,
     pub brightness: u32,
+    pub kbd_brightness: u32,
 
     // ── Battery ──
     pub battery_percent: f64,
@@ -87,6 +88,7 @@ impl Default for AppModel {
             power_profile: PowerProfile::Balanced,
             volume: 50,
             brightness: 75,
+            kbd_brightness: 50,
             battery_percent: 85.0,
             battery_charging: true,
             player_status: None,
@@ -115,6 +117,7 @@ pub enum Message {
     // Sliders
     SetVolume(u32),
     SetBrightness(u32),
+    SetKbdBrightness(u32),
 
     // Media controls
     MediaPlay,
@@ -237,6 +240,7 @@ impl cosmic::Application for AppModel {
             // ── Sliders ──────────────────────────────────────────────
             Message::SetVolume(v) => self.volume = v,
             Message::SetBrightness(v) => self.brightness = v,
+            Message::SetKbdBrightness(v) => self.kbd_brightness = v,
 
             // ── MPRIS ────────────────────────────────────────────────
             Message::MprisEvent(update) => match update {

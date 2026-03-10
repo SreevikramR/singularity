@@ -22,6 +22,7 @@ power-saver = Power Saver
 # Slider labels
 volume = Volume
 brightness = Brightness
+kbd-brightness = Keyboard Brightness
 
 # Battery
 battery = Battery
