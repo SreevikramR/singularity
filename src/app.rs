@@ -1,44 +1,76 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::config::Config;
-use crate::fl;
+use crate::subscriptions::mpris::{self, MprisUpdate, PlayerStatus};
+use crate::views;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::widget::{column, row};
-use cosmic::iced::{window, Alignment, Length, Limits, Subscription};
+use cosmic::iced::{window, Limits, Subscription};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::prelude::*;
-use cosmic::widget::{self, button, icon, slider, text};
-use cosmic::theme;
 
-/// The application model stores app-specific state used to describe its interface and
-/// drive its logic.
+use std::time::Duration;
+
+// ── View routing ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AppView {
+    #[default]
+    Main,
+    WifiDetails,
+    BluetoothDetails,
+    VpnDetails,
+    AudioDetails,
+}
+
+// ── Power profiles ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PowerProfile {
+    #[default]
+    Balanced,
+    Performance,
+    PowerSaver,
+}
+
+impl PowerProfile {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Balanced => Self::Performance,
+            Self::Performance => Self::PowerSaver,
+            Self::PowerSaver => Self::Balanced,
+        }
+    }
+}
+
+// ── Application state ────────────────────────────────────────────────────────
+
 pub struct AppModel {
-    /// Application state which is managed by the COSMIC runtime.
-    core: cosmic::Core,
-    /// The popup id.
+    /// Application state managed by the COSMIC runtime.
+    pub core: cosmic::Core,
+    /// Popup window id.
     popup: Option<window::Id>,
-    /// Configuration data that persists between application runs.
+    /// Persisted configuration.
     config: Config,
+    /// Current view being rendered in the popup.
+    pub current_view: AppView,
 
     // ── Quick-settings tile states ──
-    wifi_enabled: bool,
-    bluetooth_enabled: bool,
-    airplane_mode: bool,
-    do_not_disturb: bool,
-    dark_mode: bool,
-    night_light: bool,
+    pub wifi_enabled: bool,
+    pub bluetooth_enabled: bool,
+    pub vpn_active: bool,
+    pub global_mute: bool,
+    pub power_profile: PowerProfile,
 
     // ── Sliders ──
-    /// Volume level, 0–100.
-    volume: u32,
-    /// Screen brightness level, 0–100.
-    brightness: u32,
+    pub volume: u32,
+    pub brightness: u32,
 
-    // ── Info display ──
-    /// Battery percentage, 0–100.
-    battery_percent: f64,
-    /// Whether the battery is currently charging.
-    battery_charging: bool,
+    // ── Battery ──
+    pub battery_percent: f64,
+    pub battery_charging: bool,
+
+    // ── MPRIS ──
+    pub player_status: Option<PlayerStatus>,
 }
 
 impl Default for AppModel {
@@ -47,83 +79,61 @@ impl Default for AppModel {
             core: cosmic::Core::default(),
             popup: None,
             config: Config::default(),
+            current_view: AppView::Main,
             wifi_enabled: true,
             bluetooth_enabled: true,
-            airplane_mode: false,
-            do_not_disturb: false,
-            dark_mode: false,
-            night_light: false,
+            vpn_active: false,
+            global_mute: false,
+            power_profile: PowerProfile::Balanced,
             volume: 50,
             brightness: 75,
             battery_percent: 85.0,
             battery_charging: true,
+            player_status: None,
         }
     }
 }
 
-/// Messages emitted by the application and its widgets.
+// ── Messages ─────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub enum Message {
+    // Popup lifecycle
     TogglePopup,
     PopupClosed(window::Id),
+
+    // Navigation
+    Navigate(AppView),
 
     // Tile toggles
     ToggleWifi(bool),
     ToggleBluetooth(bool),
-    ToggleAirplaneMode(bool),
-    ToggleDoNotDisturb(bool),
-    ToggleDarkMode(bool),
-    ToggleNightLight(bool),
+    ToggleVpn(bool),
+    ToggleGlobalMute(bool),
+    CyclePowerProfile,
 
     // Sliders
     SetVolume(u32),
     SetBrightness(u32),
 
+    // Media controls
+    MediaPlay,
+    MediaPause,
+    MediaNext,
+    MediaPrevious,
+    MprisEvent(MprisUpdate),
+
+    // Screenshot
+    TakeScreenshot,
+    ExecuteScreenshot,
+
+    // Power actions
+    LockScreen,
+    LogOut,
+    PowerOff,
+
     // System
     UpdateConfig(Config),
-    OpenSettings,
-    SubscriptionChannel,
-}
-
-// ── Tile helper ──────────────────────────────────────────────────────────────
-
-/// Creates a single quick-settings tile widget.
-///
-/// Each tile is a rounded button with an icon and a label that visually indicates
-/// whether the setting is active or inactive.
-fn quick_tile<'a>(
-    icon_name: &'a str,
-    label: String,
-    active: bool,
-    on_press: Message,
-) -> Element<'a, Message> {
-    let icon_widget: Element<'a, Message> = icon::from_name(icon_name)
-        .size(20)
-        .symbolic(true)
-        .into();
-
-    let label_widget: Element<'a, Message> = text::body(label)
-        .width(Length::Shrink)
-        .into();
-
-    let content: Element<'a, Message> = column![icon_widget, label_widget]
-        .spacing(6)
-        .align_x(Alignment::Center)
-        .width(Length::Fill)
-        .into();
-
-    let style = if active {
-        theme::Button::Suggested
-    } else {
-        theme::Button::Standard
-    };
-
-    button::custom(content)
-        .class(style)
-        .on_press(on_press)
-        .width(Length::Fill)
-        .padding(8)
-        .into()
 }
 
 // ── Application implementation ───────────────────────────────────────────────
@@ -143,7 +153,6 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    /// Initializes the application with any given flags and startup commands.
     fn init(
         core: cosmic::Core,
         _flags: Self::Flags,
@@ -157,10 +166,7 @@ impl cosmic::Application for AppModel {
 
         let app = AppModel {
             core,
-            config: config.clone(),
-            dark_mode: config.dark_mode,
-            night_light: config.night_light,
-            do_not_disturb: config.do_not_disturb,
+            config,
             ..Default::default()
         };
 
@@ -171,9 +177,8 @@ impl cosmic::Application for AppModel {
         Some(Message::PopupClosed(id))
     }
 
-    // ── Panel icon ───────────────────────────────────────────────────────
+    // ── Panel button: pill-shaped with 3 dynamic icons ───────────────────
 
-    /// The applet's button in the panel — a single unified icon.
     fn view(&self) -> Element<'_, Self::Message> {
         self.core
             .applet
@@ -182,157 +187,16 @@ impl cosmic::Application for AppModel {
             .into()
     }
 
-    // ── Popup window ─────────────────────────────────────────────────────
+    // ── Popup: route to active view ──────────────────────────────────────
 
     fn view_window(&self, _id: window::Id) -> Element<'_, Self::Message> {
-        let spacing = cosmic::theme::active().cosmic().spacing;
-
-        // ── Volume slider ────────────────────────────────────────────────
-        let volume_icon = if self.volume == 0 {
-            "audio-volume-muted-symbolic"
-        } else if self.volume < 33 {
-            "audio-volume-low-symbolic"
-        } else if self.volume < 66 {
-            "audio-volume-medium-symbolic"
-        } else {
-            "audio-volume-high-symbolic"
+        let content = match &self.current_view {
+            AppView::Main => views::main_view::main_view(self),
+            AppView::WifiDetails => views::wifi_details::wifi_details_view(self),
+            AppView::BluetoothDetails => views::bluetooth_details::bluetooth_details_view(self),
+            AppView::VpnDetails => views::vpn_details::vpn_details_view(self),
+            AppView::AudioDetails => views::audio_details::audio_details_view(self),
         };
-
-        let volume_row = row![
-            icon::from_name(volume_icon).size(20).symbolic(true),
-            slider(0..=100, self.volume, Message::SetVolume)
-                .width(Length::Fill),
-        ]
-        .spacing(spacing.space_s)
-        .align_y(Alignment::Center)
-        .padding([0, spacing.space_xs]);
-
-        // ── Brightness slider ────────────────────────────────────────────
-        let brightness_icon = if self.brightness < 33 {
-            "display-brightness-low-symbolic"
-        } else if self.brightness < 66 {
-            "display-brightness-medium-symbolic"
-        } else {
-            "display-brightness-high-symbolic"
-        };
-
-        let brightness_row = row![
-            icon::from_name(brightness_icon).size(20).symbolic(true),
-            slider(0..=100, self.brightness, Message::SetBrightness)
-                .width(Length::Fill),
-        ]
-        .spacing(spacing.space_s)
-        .align_y(Alignment::Center)
-        .padding([0, spacing.space_xs]);
-
-        // ── Toggle tile grid (3 columns × 2 rows) ───────────────────────
-        let tile_row_1 = row![
-            quick_tile(
-                "network-wireless-symbolic",
-                fl!("wifi"),
-                self.wifi_enabled,
-                Message::ToggleWifi(!self.wifi_enabled),
-            ),
-            quick_tile(
-                "bluetooth-active-symbolic",
-                fl!("bluetooth"),
-                self.bluetooth_enabled,
-                Message::ToggleBluetooth(!self.bluetooth_enabled),
-            ),
-            quick_tile(
-                "airplane-mode-symbolic",
-                fl!("airplane-mode"),
-                self.airplane_mode,
-                Message::ToggleAirplaneMode(!self.airplane_mode),
-            ),
-        ]
-        .spacing(spacing.space_xs)
-        .width(Length::Fill);
-
-        let tile_row_2 = row![
-            quick_tile(
-                "notifications-disabled-symbolic",
-                fl!("do-not-disturb"),
-                self.do_not_disturb,
-                Message::ToggleDoNotDisturb(!self.do_not_disturb),
-            ),
-            quick_tile(
-                "dark-mode-symbolic",
-                fl!("dark-mode"),
-                self.dark_mode,
-                Message::ToggleDarkMode(!self.dark_mode),
-            ),
-            quick_tile(
-                "night-light-symbolic",
-                fl!("night-light"),
-                self.night_light,
-                Message::ToggleNightLight(!self.night_light),
-            ),
-        ]
-        .spacing(spacing.space_xs)
-        .width(Length::Fill);
-
-        // ── Battery status ───────────────────────────────────────────────
-        let battery_icon = if self.battery_charging {
-            "battery-full-charging-symbolic"
-        } else if self.battery_percent > 80.0 {
-            "battery-full-symbolic"
-        } else if self.battery_percent > 50.0 {
-            "battery-good-symbolic"
-        } else if self.battery_percent > 20.0 {
-            "battery-low-symbolic"
-        } else {
-            "battery-caution-symbolic"
-        };
-
-        let battery_label = format!(
-            "{:.0}% — {}",
-            self.battery_percent,
-            if self.battery_charging {
-                fl!("charging")
-            } else {
-                fl!("on-battery")
-            }
-        );
-
-        let battery_row = row![
-            icon::from_name(battery_icon).size(20).symbolic(true),
-            text::body(battery_label).width(Length::Fill),
-        ]
-        .spacing(spacing.space_s)
-        .align_y(Alignment::Center)
-        .padding([0, spacing.space_xs]);
-
-        // ── Settings button ──────────────────────────────────────────────
-        let settings_btn = widget::settings::item(
-            fl!("settings"),
-            icon::from_name("preferences-system-symbolic")
-                .size(20)
-                .symbolic(true),
-        );
-
-        // ── Assemble the popup ───────────────────────────────────────────
-        let content = column![
-            // Sliders section
-            volume_row,
-            brightness_row,
-            // Divider
-            widget::divider::horizontal::default(),
-            // Toggle grid
-            tile_row_1,
-            tile_row_2,
-            // Divider
-            widget::divider::horizontal::default(),
-            // Battery info
-            battery_row,
-            // Divider
-            widget::divider::horizontal::default(),
-            // Settings
-            settings_btn,
-        ]
-        .spacing(spacing.space_xs)
-        .padding(spacing.space_xs);
-
         self.core.applet.popup_container(content).into()
     }
 
@@ -340,10 +204,10 @@ impl cosmic::Application for AppModel {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
-            // Watch for application configuration changes.
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
+            mpris::mpris_subscription(0u8).map(Message::MprisEvent),
         ])
     }
 
@@ -351,41 +215,137 @@ impl cosmic::Application for AppModel {
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::SubscriptionChannel => {}
+            // ── Navigation ───────────────────────────────────────────
+            Message::Navigate(view) => {
+                self.current_view = view;
+            }
 
+            // ── Config ───────────────────────────────────────────────
             Message::UpdateConfig(config) => {
                 self.config = config;
-                self.dark_mode = self.config.dark_mode;
-                self.night_light = self.config.night_light;
-                self.do_not_disturb = self.config.do_not_disturb;
             }
 
             // ── Tile toggles ─────────────────────────────────────────
             Message::ToggleWifi(v) => self.wifi_enabled = v,
             Message::ToggleBluetooth(v) => self.bluetooth_enabled = v,
-            Message::ToggleAirplaneMode(v) => {
-                self.airplane_mode = v;
-                if v {
-                    // Airplane mode disables wireless radios
-                    self.wifi_enabled = false;
-                    self.bluetooth_enabled = false;
-                }
+            Message::ToggleVpn(v) => self.vpn_active = v,
+            Message::ToggleGlobalMute(v) => self.global_mute = v,
+            Message::CyclePowerProfile => {
+                self.power_profile = self.power_profile.next();
             }
-            Message::ToggleDoNotDisturb(v) => self.do_not_disturb = v,
-            Message::ToggleDarkMode(v) => self.dark_mode = v,
-            Message::ToggleNightLight(v) => self.night_light = v,
 
             // ── Sliders ──────────────────────────────────────────────
             Message::SetVolume(v) => self.volume = v,
             Message::SetBrightness(v) => self.brightness = v,
 
-            // ── System ───────────────────────────────────────────────
-            Message::OpenSettings => {
-                // TODO: Launch cosmic-settings via activation token
+            // ── MPRIS ────────────────────────────────────────────────
+            Message::MprisEvent(update) => match update {
+                MprisUpdate::Player(status) => {
+                    self.player_status = Some(status);
+                }
+                MprisUpdate::Finished => {
+                    self.player_status = None;
+                }
+                MprisUpdate::Setup => {}
+            },
+            Message::MediaPlay => {
+                if let Some(ref status) = self.player_status {
+                    let player = status.player.clone();
+                    return Task::perform(
+                        async move { let _ = player.play().await; },
+                        |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
+                    );
+                }
+            }
+            Message::MediaPause => {
+                if let Some(ref status) = self.player_status {
+                    let player = status.player.clone();
+                    return Task::perform(
+                        async move { let _ = player.pause().await; },
+                        |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
+                    );
+                }
+            }
+            Message::MediaNext => {
+                if let Some(ref status) = self.player_status {
+                    let player = status.player.clone();
+                    return Task::perform(
+                        async move { let _ = player.next().await; },
+                        |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
+                    );
+                }
+            }
+            Message::MediaPrevious => {
+                if let Some(ref status) = self.player_status {
+                    let player = status.player.clone();
+                    return Task::perform(
+                        async move { let _ = player.previous().await; },
+                        |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
+                    );
+                }
+            }
+
+            // ── Screenshot ───────────────────────────────────────────
+            Message::TakeScreenshot => {
+                // Close the popup first, then schedule screenshot after delay
+                let close_task = if let Some(p) = self.popup.take() {
+                    destroy_popup(p)
+                } else {
+                    Task::none()
+                };
+
+                let screenshot_task = Task::perform(
+                    async {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    },
+                    |_| cosmic::Action::App(Message::ExecuteScreenshot),
+                );
+
+                return Task::batch([close_task, screenshot_task]);
+            }
+            Message::ExecuteScreenshot => {
+                let cmd = if self.config.screenshot_command.is_empty() {
+                    "cosmic-screenshot".to_string()
+                } else {
+                    self.config.screenshot_command.clone()
+                };
+
+                return Task::perform(
+                    async move {
+                        let _ = tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .spawn();
+                    },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
+            }
+
+            // ── Power actions ────────────────────────────────────────
+            Message::LockScreen => {
+                return Task::perform(
+                    async { let _ = crate::subscriptions::power::lock_screen().await; },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
+            }
+            Message::LogOut => {
+                return Task::perform(
+                    async { let _ = crate::subscriptions::power::log_out().await; },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
+            }
+            Message::PowerOff => {
+                return Task::perform(
+                    async { let _ = crate::subscriptions::power::suspend().await; },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
             }
 
             // ── Popup lifecycle ──────────────────────────────────────
             Message::TogglePopup => {
+                // Reset to main view when toggling popup
+                self.current_view = AppView::Main;
+
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
                 } else {
@@ -399,9 +359,9 @@ impl cosmic::Application for AppModel {
                         None,
                     );
                     popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(380.0)
-                        .min_width(340.0)
-                        .min_height(200.0)
+                        .max_width(460.0)
+                        .min_width(400.0)
+                        .min_height(300.0)
                         .max_height(1080.0);
                     get_popup(popup_settings)
                 };
@@ -409,6 +369,7 @@ impl cosmic::Application for AppModel {
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
                     self.popup = None;
+                    self.current_view = AppView::Main;
                 }
             }
         }

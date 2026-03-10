@@ -3,7 +3,7 @@
 use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
 
 #[derive(Debug, Default, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 1]
+#[version = 2]
 pub struct Config {
     /// Whether dark mode is enabled.
     pub dark_mode: bool,
@@ -11,4 +11,6 @@ pub struct Config {
     pub night_light: bool,
     /// Whether do-not-disturb mode is enabled.
     pub do_not_disturb: bool,
+    /// Screenshot command to execute.
+    pub screenshot_command: String,
 }
