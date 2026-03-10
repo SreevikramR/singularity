@@ -42,6 +42,10 @@ wifi-networks = Wi-Fi Networks
 bluetooth-devices = Bluetooth Devices
 vpn-connections = VPN Connections
 audio-devices = Audio Devices
+output-devices = Output
+input-devices = Input
+bluetooth-disabled = Bluetooth is disabled
+wifi-disabled = Wi-Fi is disabled
 
 # Detail view items
 connected = Connected

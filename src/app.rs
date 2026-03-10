@@ -16,6 +16,9 @@ use cosmic_settings_upower_subscription::device::{self as upower_device, DeviceD
 use cosmic_settings_upower_subscription::kbdbacklight::{
     self as upower_kbd, KeyboardBacklightRequest, KeyboardBacklightUpdate,
 };
+use cosmic_settings_network_manager_subscription::{
+    self as nm_sub, Event as NmEvent, NetworkManagerState, Request as NmRequest,
+};
 
 // ── View routing ─────────────────────────────────────────────────────────────
 
@@ -57,12 +60,11 @@ pub struct AppModel {
     /// Popup window id.
     popup: Option<window::Id>,
     /// Persisted configuration.
-    config: Config,
+    pub config: Config,
     /// Current view being rendered in the popup.
     pub current_view: AppView,
 
     // ── Quick-settings tile states ──
-    pub wifi_enabled: bool,
     pub bluetooth_enabled: bool,
     pub vpn_active: bool,
     pub global_mute: bool,
@@ -84,9 +86,26 @@ pub struct AppModel {
     pub battery_percent: f64,
     pub battery_charging: bool,
     pub has_battery: bool,
+    pub time_to_empty: Option<i64>,
+
+    // ── NetworkManager ──
+    pub nm_state: NetworkManagerState,
+    pub nm_sender: Option<futures::channel::mpsc::UnboundedSender<NmRequest>>,
 
     // ── MPRIS ──
     pub player_status: Option<PlayerStatus>,
+
+    // ── Sound ──
+    pub sound: cosmic_settings_sound_subscription::Model,
+
+    // ── Bluetooth ──
+    pub bt_adapters: std::collections::HashMap<zbus::zvariant::OwnedObjectPath, cosmic_settings_bluetooth_subscription::Adapter>,
+    pub bt_devices: std::collections::HashMap<zbus::zvariant::OwnedObjectPath, cosmic_settings_bluetooth_subscription::Device>,
+
+    // ── Service Availability ──
+    pub bluetooth_available: bool,
+    pub network_available: bool,
+    pub sound_available: bool,
 }
 
 impl Default for AppModel {
@@ -96,8 +115,7 @@ impl Default for AppModel {
             popup: None,
             config: Config::default(),
             current_view: AppView::Main,
-            wifi_enabled: true,
-            bluetooth_enabled: true,
+            bluetooth_enabled: false,
             vpn_active: false,
             global_mute: false,
             power_profile: PowerProfile::Balanced,
@@ -111,7 +129,16 @@ impl Default for AppModel {
             battery_percent: 0.0,
             battery_charging: false,
             has_battery: true,
+            time_to_empty: None,
+            nm_state: NetworkManagerState::default(),
+            nm_sender: None,
             player_status: None,
+            sound: Default::default(),
+            bt_adapters: std::collections::HashMap::new(),
+            bt_devices: std::collections::HashMap::new(),
+            bluetooth_available: false,
+            network_available: false,
+            sound_available: false,
         }
     }
 }
@@ -133,11 +160,15 @@ pub enum Message {
     ToggleVpn(bool),
     ToggleGlobalMute(bool),
     CyclePowerProfile,
+    ConnectBluetoothDevice(zbus::zvariant::OwnedObjectPath),
+    DisconnectBluetoothDevice(zbus::zvariant::OwnedObjectPath),
 
     // Sliders
     SetVolume(u32),
     SetBrightness(u32),
     SetKbdBrightness(u32),
+    SetDefaultSink(usize),
+    SetDefaultSource(usize),
 
     // Media controls
     MediaPlay,
@@ -154,6 +185,8 @@ pub enum Message {
     LockScreen,
     LogOut,
     PowerOff,
+    Suspend,
+    OpenSettings,
 
     // System
     UpdateConfig(Config),
@@ -162,6 +195,9 @@ pub enum Message {
     UPowerDevice(DeviceDbusEvent),
     KbdBacklight(KeyboardBacklightUpdate),
     Brightness(brightness_sub::Event),
+    NetworkManager(NmEvent),
+    Sound(cosmic_settings_sound_subscription::Message),
+    Bluetooth(cosmic_settings_bluetooth_subscription::Event),
 }
 
 // ── Application implementation ───────────────────────────────────────────────
@@ -185,6 +221,7 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
+        tracing::info!("Initializing Singularity applet");
         let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
             .map(|context| match Config::get_entry(&context) {
                 Ok(config) => config,
@@ -198,7 +235,18 @@ impl cosmic::Application for AppModel {
             ..Default::default()
         };
 
-        (app, Task::none())
+        let init_task = Task::perform(
+            async move {
+                if let Ok(conn) = zbus::Connection::system().await {
+                    cosmic_settings_bluetooth_subscription::get_adapters(conn).await
+                } else {
+                    cosmic_settings_bluetooth_subscription::Event::SetAdapters(std::collections::HashMap::new())
+                }
+            },
+            |m| cosmic::Action::App(Message::Bluetooth(m))
+        );
+
+        (app, init_task)
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -244,12 +292,19 @@ impl cosmic::Application for AppModel {
             upower_kbd::kbd_backlight_subscription(2u8).map(Message::KbdBacklight),
             // Settings daemon (display brightness)
             brightness_sub::subscription().map(Message::Brightness),
+            // Network Manager
+            nm_sub::subscription().map(Message::NetworkManager),
+            // Sound/Audio
+            Subscription::run_with("singularity-sound", get_sound_watch).map(Message::Sound),
+            // Bluetooth
+            cosmic_settings_bluetooth_subscription::subscription().map(Message::Bluetooth),
         ])
     }
 
     // ── Message handling ─────────────────────────────────────────────────
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
+        tracing::debug!("Received message: {:?}", message);
         match message {
             // ── Navigation ───────────────────────────────────────────
             Message::Navigate(view) => {
@@ -262,16 +317,41 @@ impl cosmic::Application for AppModel {
             }
 
             // ── Tile toggles ─────────────────────────────────────────
-            Message::ToggleWifi(v) => self.wifi_enabled = v,
-            Message::ToggleBluetooth(v) => self.bluetooth_enabled = v,
+            Message::ToggleWifi(v) => {
+                if let Some(ref sender) = self.nm_sender {
+                    let _ = sender.unbounded_send(NmRequest::SetWiFi(v));
+                }
+            }
+            Message::ToggleBluetooth(v) => {
+                self.bluetooth_enabled = v;
+                if let Some(path) = self.bt_adapters.keys().next().cloned() {
+                    return Task::perform(
+                        async move {
+                            if let Ok(conn) = zbus::Connection::system().await {
+                                cosmic_settings_bluetooth_subscription::change_adapter_status(conn, path, v).await
+                            } else {
+                                cosmic_settings_bluetooth_subscription::Event::SetAdapters(std::collections::HashMap::new())
+                            }
+                        },
+                        |_m| cosmic::Action::App(Message::Bluetooth(_m))
+                    );
+                }
+            }
             Message::ToggleVpn(v) => self.vpn_active = v,
-            Message::ToggleGlobalMute(v) => self.global_mute = v,
+            Message::ToggleGlobalMute(_v) => {
+                self.sound.toggle_sink_mute();
+                self.global_mute = self.sound.sink_mute;
+            }
             Message::CyclePowerProfile => {
                 self.power_profile = self.power_profile.next();
             }
 
             // ── Sliders ──────────────────────────────────────────────
-            Message::SetVolume(v) => self.volume = v,
+            Message::SetVolume(v) => {
+                self.volume = v;
+                return self.sound.set_sink_volume(v)
+                    .map(|m| cosmic::Action::App(Message::Sound(m)));
+            }
             Message::SetBrightness(v) => {
                 self.brightness = v;
                 // Send brightness change to settings daemon
@@ -288,6 +368,12 @@ impl cosmic::Application for AppModel {
                     let _ = sender.send(KeyboardBacklightRequest::Set(raw));
                 }
             }
+            Message::SetDefaultSink(pos) => {
+                return self.sound.set_default_sink(pos).map(|m| cosmic::Action::App(Message::Sound(m)));
+            }
+            Message::SetDefaultSource(pos) => {
+                return self.sound.set_default_source(pos).map(|m| cosmic::Action::App(Message::Sound(m)));
+            }
 
             // ── D-Bus: UPower battery ────────────────────────────────
             Message::UPowerDevice(event) => match event {
@@ -297,11 +383,16 @@ impl cosmic::Application for AppModel {
                 DeviceDbusEvent::Update {
                     on_battery,
                     percent,
-                    time_to_empty: _,
+                    time_to_empty,
                 } => {
                     self.has_battery = true;
                     self.battery_charging = !on_battery;
                     self.battery_percent = percent;
+                    if on_battery {
+                        self.time_to_empty = Some(time_to_empty);
+                    } else {
+                        self.time_to_empty = None;
+                    }
                 }
             },
 
@@ -336,6 +427,114 @@ impl cosmic::Application for AppModel {
                     self.max_brightness = val;
                 }
             },
+
+            // ── D-Bus: Network Manager ───────────────────────────────
+            Message::NetworkManager(event) => {
+                match event {
+                    NmEvent::Init { sender, state, .. } => {
+                        self.network_available = true;
+                        self.nm_sender = Some(sender);
+                        self.nm_state = state;
+                        self.vpn_active = self.nm_state.active_conns.iter().any(|c| matches!(c, cosmic_settings_network_manager_subscription::ActiveConnectionInfo::Vpn { .. }));
+                        if let Some(ref sender) = self.nm_sender {
+                            let _ = sender.unbounded_send(NmRequest::Reload);
+                        }
+                    }
+                    NmEvent::RequestResponse { state, .. } => {
+                        self.nm_state = state;
+                        self.vpn_active = self.nm_state.active_conns.iter().any(|c| matches!(c, cosmic_settings_network_manager_subscription::ActiveConnectionInfo::Vpn { .. }));
+                    }
+                    NmEvent::Devices | NmEvent::WirelessAccessPoints | NmEvent::ActiveConns | NmEvent::WiFiCredentials { .. } => {
+                        if let Some(ref sender) = self.nm_sender {
+                            let _ = sender.unbounded_send(NmRequest::Reload);
+                        }
+                    }
+                    NmEvent::WiFiEnabled(enabled) => {
+                        self.nm_state.wifi_enabled = enabled;
+                        if let Some(ref sender) = self.nm_sender {
+                            let _ = sender.unbounded_send(NmRequest::Reload);
+                        }
+                    }
+                }
+            }
+
+            // ── D-Bus: Sound/Audio ───────────────────────────────────────────
+            Message::Sound(msg) => {
+                self.sound_available = true;
+                let task = self.sound.update(msg).map(|m| cosmic::Action::App(Message::Sound(m)));
+                self.volume = self.sound.sink_volume;
+                self.global_mute = self.sound.sink_mute;
+                return task;
+            }
+
+            // ── D-Bus: Bluetooth ─────────────────────────────────────────────
+            Message::Bluetooth(event) => {
+                use cosmic_settings_bluetooth_subscription::Event as BtEvent;
+                match event {
+                    BtEvent::SetAdapters(adapters) => {
+                        self.bluetooth_available = true;
+                        self.bt_adapters = adapters;
+                        if let Some((path, adapter)) = self.bt_adapters.iter().next() {
+                            self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                            let path = path.clone();
+                            return cosmic::Task::perform(
+                                async move {
+                                    if let Ok(conn) = zbus::Connection::system().await {
+                                        cosmic_settings_bluetooth_subscription::get_devices(conn, path).await
+                                    } else {
+                                        cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
+                                    }
+                                },
+                                |m| cosmic::Action::App(Message::Bluetooth(m))
+                            );
+                        }
+                    }
+                    BtEvent::SetDevices(devices) => self.bt_devices = devices,
+                    BtEvent::AddedAdapter(path, adapter) => {
+                        self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                        self.bt_adapters.insert(path, adapter);
+                    },
+                    BtEvent::AddedDevice(path, device) => { self.bt_devices.insert(path, device); },
+                    BtEvent::RemovedAdapter(path) => { self.bt_adapters.remove(&path); },
+                    BtEvent::RemovedDevice(path) => { self.bt_devices.remove(&path); },
+                    BtEvent::UpdatedAdapter(path, updates) => {
+                        if let Some(adapter) = self.bt_adapters.get_mut(&path) {
+                            adapter.update(updates);
+                            self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                        }
+                    },
+                    BtEvent::UpdatedDevice(path, updates) => {
+                        if let Some(device) = self.bt_devices.get_mut(&path) {
+                            device.update(updates);
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            Message::ConnectBluetoothDevice(path) => {
+                return Task::perform(
+                    async move {
+                        if let Ok(conn) = zbus::Connection::system().await {
+                            cosmic_settings_bluetooth_subscription::connect_device(conn, path).await
+                        } else {
+                            cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
+                        }
+                    },
+                    |_m| cosmic::Action::App(Message::Bluetooth(_m))
+                );
+            }
+            Message::DisconnectBluetoothDevice(path) => {
+                return Task::perform(
+                    async move {
+                        if let Ok(conn) = zbus::Connection::system().await {
+                            cosmic_settings_bluetooth_subscription::disconnect_device(conn, path).await
+                        } else {
+                            cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
+                        }
+                    },
+                    |_m| cosmic::Action::App(Message::Bluetooth(_m))
+                );
+            }
 
             // ── MPRIS ────────────────────────────────────────────────
             Message::MprisEvent(update) => match update {
@@ -443,7 +642,22 @@ impl cosmic::Application for AppModel {
             }
             Message::PowerOff => {
                 return Task::perform(
+                    async { let _ = crate::subscriptions::power::power_off().await; },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
+            }
+            Message::Suspend => {
+                return Task::perform(
                     async { let _ = crate::subscriptions::power::suspend().await; },
+                    |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
+                );
+            }
+            Message::OpenSettings => {
+                return Task::perform(
+                    async {
+                        let _ = tokio::process::Command::new("cosmic-settings")
+                            .spawn();
+                    },
                     |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
                 );
             }
@@ -486,4 +700,9 @@ impl cosmic::Application for AppModel {
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
+}
+
+// ── Boilerplate getters ──────────────────────────────────────────────────────
+fn get_sound_watch(_: &&str) -> impl futures::Stream<Item = cosmic_settings_sound_subscription::Message> + cosmic::iced_futures::MaybeSend + 'static {
+    cosmic_settings_sound_subscription::watch()
 }

@@ -1,14 +1,19 @@
-# COSMIC Applet Template
+# Singularity
 
-A template for developing applets for the COSMIC™ desktop environment using [libcosmic][libcosmic].
+A unified, comprehensive quick-settings applet for the COSMIC™ desktop environment. Singularity provides quick access to essential system controls like Wi-Fi, Bluetooth, Audio, Power Profiles, and VPN settings, all wrapped in a clean, unified interface.
 
-## Getting Started
+## Prerequisites
 
-To create an applet with this template, [install `cargo generate`][cargo-generate] and run:
+- `rust` and `cargo`
+- `just` (command runner)
+- A system with standard Linux desktop services:
+  - NetworkManager
+  - UPower
+  - BlueZ
+  - PipeWire
+  - MPRIS-compatible media players
 
-```sh
-cargo generate gh:pop-os/cosmic-applet-template
-```
+## Building and Installing
 
 A [justfile](./justfile) is included by default with common recipes used by other COSMIC projects. Install from [casey/just][just]
 

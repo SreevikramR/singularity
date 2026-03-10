@@ -21,19 +21,24 @@ pub fn vpn_details_view(app: &AppModel) -> Element<'_, Message> {
 
     let mut vpn_list = column![].spacing(4).width(Length::Fill);
 
-    // Placeholder VPN connections
-    let demo_vpns = [
-        ("Work VPN", true),
-        ("Personal WireGuard", false),
-        ("Travel VPN", false),
-    ];
-
-    for (name, connected) in demo_vpns {
-        let status_text = if connected {
-            fl!("connected")
+    let active_vpns: Vec<_> = app.nm_state.active_conns.iter().filter_map(|conn| {
+        if let cosmic_settings_network_manager_subscription::ActiveConnectionInfo::Vpn { name, .. } = conn {
+            Some(name.clone())
         } else {
-            String::new()
-        };
+            None
+        }
+    }).collect();
+
+    if active_vpns.is_empty() {
+        vpn_list = vpn_list.push(
+            text::body("No active VPN connections")
+                .width(Length::Fill)
+                .align_x(Alignment::Center)
+        );
+    }
+
+    for name in active_vpns {
+        let status_text = fl!("connected");
 
         let vpn_row = padded_control(
             row![

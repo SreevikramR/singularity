@@ -43,9 +43,22 @@ pub async fn log_out() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(s) if s.success() => Ok(()),
         _ => {
             // Fallback: terminate user session via loginctl
+            let uid = tokio::process::Command::new("id")
+                .arg("-u")
+                .output()
+                .await?;
+
+            if !uid.status.success() {
+                return Err(format!("failed to get current uid: {}", uid.status).into());
+            }
+
+            let uid = String::from_utf8(uid.stdout)?
+                .trim()
+                .to_string();
+
             let _ = tokio::process::Command::new("loginctl")
                 .arg("terminate-user")
-                .arg("")
+                .arg(uid)
                 .status()
                 .await?;
             Ok(())

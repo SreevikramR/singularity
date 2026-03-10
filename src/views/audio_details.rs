@@ -23,66 +23,62 @@ pub fn audio_details_view(app: &AppModel) -> Element<'_, Message> {
 
     // Output section header
     device_list = device_list.push(
-        padded_control(text::heading(String::from("Output")).width(Length::Fill))
+        padded_control(text::heading(fl!("output-devices")).width(Length::Fill))
     );
 
-    // Placeholder output devices
-    let output_devices = [
-        ("Built-in Speakers", true),
-        ("HDMI Audio", false),
-        ("Bluetooth Headphones", false),
-    ];
-
-    for (name, active) in output_devices {
+    for (index, name) in app.sound.sinks().iter().enumerate() {
+        let active = app.sound.active_sink() == Some(index);
         let check_icon = if active {
             "object-select-symbolic"
         } else {
-            "content-loading-symbolic"
+            ""
         };
 
-        let dev_row = padded_control(
+        let dev_row = cosmic::widget::button::custom(
             row![
                 icon::from_name("audio-speakers-symbolic").size(20).symbolic(true),
                 text::body(name.to_string()).width(Length::Fill),
-                if active {
-                    icon::from_name(check_icon).size(16).symbolic(true)
-                } else {
-                    icon::from_name("").size(16).symbolic(true)
-                },
+                icon::from_name(check_icon).size(16).symbolic(true),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .width(Length::Fill),
-        );
+        )
+        .width(Length::Fill)
+        .padding(8)
+        .on_press(Message::SetDefaultSink(index))
+        .class(cosmic::theme::Button::Standard);
 
         device_list = device_list.push(dev_row);
     }
 
     // Input section header
     device_list = device_list.push(
-        padded_control(text::heading(String::from("Input")).width(Length::Fill))
+        padded_control(text::heading(fl!("input-devices")).width(Length::Fill))
     );
 
-    let input_devices = [
-        ("Built-in Microphone", true),
-        ("USB Microphone", false),
-    ];
+    for (index, name) in app.sound.sources().iter().enumerate() {
+        let active = app.sound.active_source() == Some(index);
+        let check_icon = if active {
+            "object-select-symbolic"
+        } else {
+            ""
+        };
 
-    for (name, active) in input_devices {
-        let dev_row = padded_control(
+        let dev_row = cosmic::widget::button::custom(
             row![
                 icon::from_name("audio-input-microphone-symbolic").size(20).symbolic(true),
                 text::body(name.to_string()).width(Length::Fill),
-                if active {
-                    icon::from_name("object-select-symbolic").size(16).symbolic(true)
-                } else {
-                    icon::from_name("").size(16).symbolic(true)
-                },
+                icon::from_name(check_icon).size(16).symbolic(true),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .width(Length::Fill),
-        );
+        )
+        .width(Length::Fill)
+        .padding(8)
+        .on_press(Message::SetDefaultSource(index))
+        .class(cosmic::theme::Button::Standard);
 
         device_list = device_list.push(dev_row);
     }

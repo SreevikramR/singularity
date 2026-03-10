@@ -12,6 +12,7 @@ use cosmic::iced::widget::{column, container, row};
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{button, icon, slider, text};
+use cosmic::iced::widget::Space;
 use cosmic::theme;
 use mpris2_zbus::player::PlaybackStatus;
 
@@ -23,11 +24,14 @@ fn split_tile<'a>(
     icon_name: &'a str,
     label: String,
     active: bool,
+    available: bool,
     on_toggle: Message,
     on_navigate: Option<Message>,
 ) -> Element<'a, Message> {
-    let make_style = || -> theme::Button {
-        if active {
+    let make_style = move || -> theme::Button {
+        if !available {
+            theme::Button::Standard
+        } else if active {
             theme::Button::Suggested
         } else {
             theme::Button::Standard
@@ -55,12 +59,15 @@ fn split_tile<'a>(
     .align_y(Alignment::Center)
     .into();
 
-    let left_btn = button::custom(left_content)
+    let mut left_btn = button::custom(left_content)
         .class(make_style())
-        .on_press(on_toggle)
         .width(Length::Fill)
         .height(Length::Fixed(64.0))
         .padding([8, 4]);
+
+    if available {
+        left_btn = left_btn.on_press(on_toggle);
+    }
 
     if let Some(nav_msg) = on_navigate {
         let chevron: Element<'a, Message> = container(
@@ -72,11 +79,14 @@ fn split_tile<'a>(
         .align_y(Alignment::Center)
         .into();
 
-        let right_btn = button::custom(chevron)
+        let mut right_btn = button::custom(chevron)
             .class(make_style())
-            .on_press(nav_msg)
             .height(Length::Fixed(64.0))
             .padding([8, 4]);
+
+        if available {
+            right_btn = right_btn.on_press(nav_msg);
+        }
 
         row![left_btn, right_btn]
             .spacing(1)
@@ -209,14 +219,16 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         split_tile(
             "network-wireless-symbolic",
             fl!("wifi"),
-            app.wifi_enabled,
-            Message::ToggleWifi(!app.wifi_enabled),
+            app.nm_state.wifi_enabled,
+            app.network_available,
+            Message::ToggleWifi(!app.nm_state.wifi_enabled),
             Some(Message::Navigate(AppView::WifiDetails)),
         ),
         split_tile(
             "bluetooth-active-symbolic",
             fl!("bluetooth"),
             app.bluetooth_enabled,
+            app.bluetooth_available,
             Message::ToggleBluetooth(!app.bluetooth_enabled),
             Some(Message::Navigate(AppView::BluetoothDetails)),
         ),
@@ -229,6 +241,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             power_icon,
             power_label,
             true,
+            true,
             Message::CyclePowerProfile,
             None,
         ),
@@ -236,6 +249,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             "network-vpn-symbolic",
             fl!("vpn"),
             app.vpn_active,
+            app.network_available,
             Message::ToggleVpn(!app.vpn_active),
             Some(Message::Navigate(AppView::VpnDetails)),
         ),
@@ -248,6 +262,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             "microphone-sensitivity-muted-symbolic",
             fl!("global-mute"),
             app.global_mute,
+            app.sound_available,
             Message::ToggleGlobalMute(!app.global_mute),
             None,
         ),
@@ -255,6 +270,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
             "accessories-screenshot-symbolic",
             fl!("screenshot"),
             false,
+            true,
             Message::TakeScreenshot,
             None,
         ),
@@ -290,7 +306,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         button::icon(icon::from_name(volume_icon).size(20).symbolic(true))
             .on_press(Message::ToggleGlobalMute(!app.global_mute))
             .padding(4),
-        slider(0..=150, app.volume, Message::SetVolume)
+        slider(0..=app.config.max_volume, app.volume, Message::SetVolume)
             .width(Length::Fill),
         button::icon(icon::from_name("go-next-symbolic").size(16).symbolic(true))
             .on_press(Message::Navigate(AppView::AudioDetails))
@@ -347,15 +363,23 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         "battery-caution-symbolic"
     };
 
-    let battery_text = format!(
-        "{:.0}% — {}",
-        app.battery_percent,
-        if app.battery_charging {
-            fl!("charging")
-        } else {
-            fl!("on-battery")
-        }
-    );
+    let battery_text = if app.battery_charging && app.battery_percent >= 99.0 {
+        fl!("fully-charged")
+    } else if let Some(secs) = app.time_to_empty {
+        let hours = secs / 3600;
+        let minutes = (secs % 3600) / 60;
+        format!("{:.0}% — {}h {}m remaining", app.battery_percent, hours, minutes)
+    } else {
+        format!(
+            "{:.0}% — {}",
+            app.battery_percent,
+            if app.battery_charging {
+                fl!("charging")
+            } else {
+                fl!("on-battery")
+            }
+        )
+    };
 
     let battery_info = row![
         icon::from_name(battery_icon).size(16).symbolic(true),
@@ -366,11 +390,18 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     .width(Length::Fill);
 
     let power_buttons = row![
+        button::icon(icon::from_name("preferences-system-symbolic").size(16).symbolic(true))
+            .on_press(Message::OpenSettings)
+            .padding(4),
+        Space::new().width(Length::Fill),
         button::icon(icon::from_name("system-lock-screen-symbolic").size(16).symbolic(true))
             .on_press(Message::LockScreen)
             .padding(4),
         button::icon(icon::from_name("system-log-out-symbolic").size(16).symbolic(true))
             .on_press(Message::LogOut)
+            .padding(4),
+        button::icon(icon::from_name("system-suspend-symbolic").size(16).symbolic(true))
+            .on_press(Message::Suspend)
             .padding(4),
         button::icon(icon::from_name("system-shutdown-symbolic").size(16).symbolic(true))
             .on_press(Message::PowerOff)
