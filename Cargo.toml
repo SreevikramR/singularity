@@ -10,6 +10,7 @@ repository = "https://github.com/sreevikramr/singularity"
 futures = "0.3"
 futures-util = "0.3.31"
 i18n-embed-fl = "0.10"
+log = "0.4"
 rust-embed = "8.7.2"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1"
@@ -41,11 +42,25 @@ version = "5"
 [dependencies.mpris2-zbus]
 git = "https://github.com/pop-os/dbus-settings-bindings"
 
-# NOTE: cosmic-settings-*-subscription crates are currently incompatible with
-# libcosmic master (Subscription::run_with_id was renamed to run_with).
-# Using direct zbus D-Bus calls for WiFi, Bluetooth, Audio, and Battery instead.
-# These will be switched back to the official subscription crates once the
-# cosmic-settings repo is updated for the new API.
+# UPower battery subscription
+[dependencies.cosmic-settings-upower-subscription]
+path = "vendor/cosmic-settings/subscriptions/upower"
+
+# UPower D-Bus bindings (needed for types)
+[dependencies.upower_dbus]
+git = "https://github.com/pop-os/dbus-settings-bindings"
+
+# Settings daemon (brightness) subscription
+[dependencies.cosmic-settings-daemon-subscription]
+path = "vendor/cosmic-settings/subscriptions/settings-daemon"
+
+# Network manager subscription
+[dependencies.cosmic-settings-network-manager-subscription]
+path = "vendor/cosmic-settings/subscriptions/network-manager"
+
+# Network manager D-Bus bindings (needed for types)
+[dependencies.cosmic-dbus-networkmanager]
+git = "https://github.com/pop-os/dbus-settings-bindings"
 
 # Uncomment to test a locally-cloned libcosmic
 # [patch.'https://github.com/pop-os/libcosmic']

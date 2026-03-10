@@ -10,6 +10,13 @@ use cosmic::prelude::*;
 
 use std::time::Duration;
 
+// Re-export subscription event types
+use cosmic_settings_daemon_subscription as brightness_sub;
+use cosmic_settings_upower_subscription::device::{self as upower_device, DeviceDbusEvent};
+use cosmic_settings_upower_subscription::kbdbacklight::{
+    self as upower_kbd, KeyboardBacklightRequest, KeyboardBacklightUpdate,
+};
+
 // ── View routing ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,11 +71,19 @@ pub struct AppModel {
     // ── Sliders ──
     pub volume: u32,
     pub brightness: u32,
+    pub max_brightness: i32,
     pub kbd_brightness: u32,
+    pub max_kbd_brightness: i32,
+
+    // ── Senders for settings-daemon control ──
+    pub brightness_sender: Option<tokio::sync::mpsc::UnboundedSender<brightness_sub::Request>>,
+    pub kbd_brightness_sender:
+        Option<tokio::sync::mpsc::UnboundedSender<KeyboardBacklightRequest>>,
 
     // ── Battery ──
     pub battery_percent: f64,
     pub battery_charging: bool,
+    pub has_battery: bool,
 
     // ── MPRIS ──
     pub player_status: Option<PlayerStatus>,
@@ -88,9 +103,14 @@ impl Default for AppModel {
             power_profile: PowerProfile::Balanced,
             volume: 50,
             brightness: 75,
+            max_brightness: 100,
             kbd_brightness: 50,
-            battery_percent: 85.0,
-            battery_charging: true,
+            max_kbd_brightness: 100,
+            brightness_sender: None,
+            kbd_brightness_sender: None,
+            battery_percent: 0.0,
+            battery_charging: false,
+            has_battery: true,
             player_status: None,
         }
     }
@@ -137,6 +157,11 @@ pub enum Message {
 
     // System
     UpdateConfig(Config),
+
+    // ── D-Bus subscription events ──
+    UPowerDevice(DeviceDbusEvent),
+    KbdBacklight(KeyboardBacklightUpdate),
+    Brightness(brightness_sub::Event),
 }
 
 // ── Application implementation ───────────────────────────────────────────────
@@ -207,10 +232,18 @@ impl cosmic::Application for AppModel {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
+            // Config watcher
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
+            // MPRIS media player
             mpris::mpris_subscription(0u8).map(Message::MprisEvent),
+            // UPower battery
+            upower_device::device_subscription(1u8).map(Message::UPowerDevice),
+            // UPower keyboard backlight
+            upower_kbd::kbd_backlight_subscription(2u8).map(Message::KbdBacklight),
+            // Settings daemon (display brightness)
+            brightness_sub::subscription().map(Message::Brightness),
         ])
     }
 
@@ -239,8 +272,70 @@ impl cosmic::Application for AppModel {
 
             // ── Sliders ──────────────────────────────────────────────
             Message::SetVolume(v) => self.volume = v,
-            Message::SetBrightness(v) => self.brightness = v,
-            Message::SetKbdBrightness(v) => self.kbd_brightness = v,
+            Message::SetBrightness(v) => {
+                self.brightness = v;
+                // Send brightness change to settings daemon
+                if let Some(ref sender) = self.brightness_sender {
+                    let raw = (v as i32 * self.max_brightness) / 100;
+                    let _ = sender.send(brightness_sub::Request::SetDisplayBrightness(raw));
+                }
+            }
+            Message::SetKbdBrightness(v) => {
+                self.kbd_brightness = v;
+                // Send keyboard brightness change to UPower
+                if let Some(ref sender) = self.kbd_brightness_sender {
+                    let raw = (v as i32 * self.max_kbd_brightness) / 100;
+                    let _ = sender.send(KeyboardBacklightRequest::Set(raw));
+                }
+            }
+
+            // ── D-Bus: UPower battery ────────────────────────────────
+            Message::UPowerDevice(event) => match event {
+                DeviceDbusEvent::NoBattery => {
+                    self.has_battery = false;
+                }
+                DeviceDbusEvent::Update {
+                    on_battery,
+                    percent,
+                    time_to_empty: _,
+                } => {
+                    self.has_battery = true;
+                    self.battery_charging = !on_battery;
+                    self.battery_percent = percent;
+                }
+            },
+
+            // ── D-Bus: Keyboard backlight ────────────────────────────
+            Message::KbdBacklight(update) => match update {
+                KeyboardBacklightUpdate::Sender(sender) => {
+                    self.kbd_brightness_sender = Some(sender);
+                }
+                KeyboardBacklightUpdate::Brightness(val) => {
+                    if self.max_kbd_brightness > 0 {
+                        self.kbd_brightness =
+                            ((val as f64 / self.max_kbd_brightness as f64) * 100.0) as u32;
+                    }
+                }
+                KeyboardBacklightUpdate::MaxBrightness(val) => {
+                    self.max_kbd_brightness = val;
+                }
+            },
+
+            // ── D-Bus: Display brightness ────────────────────────────
+            Message::Brightness(event) => match event {
+                brightness_sub::Event::Sender(sender) => {
+                    self.brightness_sender = Some(sender);
+                }
+                brightness_sub::Event::DisplayBrightness(val) => {
+                    if self.max_brightness > 0 {
+                        self.brightness =
+                            ((val as f64 / self.max_brightness as f64) * 100.0) as u32;
+                    }
+                }
+                brightness_sub::Event::MaxDisplayBrightness(val) => {
+                    self.max_brightness = val;
+                }
+            },
 
             // ── MPRIS ────────────────────────────────────────────────
             Message::MprisEvent(update) => match update {
@@ -256,7 +351,9 @@ impl cosmic::Application for AppModel {
                 if let Some(ref status) = self.player_status {
                     let player = status.player.clone();
                     return Task::perform(
-                        async move { let _ = player.play().await; },
+                        async move {
+                            let _ = player.play().await;
+                        },
                         |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
                     );
                 }
@@ -265,7 +362,9 @@ impl cosmic::Application for AppModel {
                 if let Some(ref status) = self.player_status {
                     let player = status.player.clone();
                     return Task::perform(
-                        async move { let _ = player.pause().await; },
+                        async move {
+                            let _ = player.pause().await;
+                        },
                         |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
                     );
                 }
@@ -274,7 +373,9 @@ impl cosmic::Application for AppModel {
                 if let Some(ref status) = self.player_status {
                     let player = status.player.clone();
                     return Task::perform(
-                        async move { let _ = player.next().await; },
+                        async move {
+                            let _ = player.next().await;
+                        },
                         |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
                     );
                 }
@@ -283,7 +384,9 @@ impl cosmic::Application for AppModel {
                 if let Some(ref status) = self.player_status {
                     let player = status.player.clone();
                     return Task::perform(
-                        async move { let _ = player.previous().await; },
+                        async move {
+                            let _ = player.previous().await;
+                        },
                         |_| cosmic::Action::App(Message::MprisEvent(MprisUpdate::Setup)),
                     );
                 }
