@@ -54,6 +54,18 @@ paired = Paired
 connect = Connect
 disconnect = Disconnect
 forget = Forget
+connecting = Connecting
+disconnected = Disconnected
+disconnecting = Disconnecting
+not-connected = Not Connected
+pairing = Pairing
+bluetooth-paired-devices = Paired Devices
+bluetooth-available-devices = Available Devices
+bluetooth-no-devices-found = No devices found
+bluetooth-pairing-request = Pairing Request
+bluetooth-pairing-request-body = Does the PIN match on { $device_name }?
+confirm = Confirm
+cancel = Cancel
 
 # Media
 no-media = No media playing

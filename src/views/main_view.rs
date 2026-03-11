@@ -159,20 +159,34 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
     } else {
         "media-playback-start-symbolic"
     };
-    let play_pause_msg = if is_playing {
-        Message::MediaPause
-    } else {
-        Message::MediaPlay
-    };
+
+    let can_go_previous = player_status.as_ref().map(|s| s.can_go_previous).unwrap_or(false);
+    let can_play = player_status.as_ref().map(|s| s.can_play).unwrap_or(false);
+    let can_pause = player_status.as_ref().map(|s| s.can_pause).unwrap_or(false);
+    let can_go_next = player_status.as_ref().map(|s| s.can_go_next).unwrap_or(false);
+
+    let mut prev_btn = button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true));
+    if can_go_previous {
+        prev_btn = prev_btn.on_press(Message::MediaPrevious);
+    }
+
+    let mut play_pause_btn = button::icon(icon::from_name(play_pause_icon).size(20).symbolic(true));
+    if is_playing && can_pause {
+        play_pause_btn = play_pause_btn.on_press(Message::MediaPause);
+    } else if !is_playing && can_play {
+        play_pause_btn = play_pause_btn.on_press(Message::MediaPlay);
+    }
+
+    let mut next_btn = button::icon(icon::from_name("media-skip-forward-symbolic").size(16).symbolic(true));
+    if can_go_next {
+        next_btn = next_btn.on_press(Message::MediaNext);
+    }
 
     let controls: Element<'a, Message> = container(
         row![
-            button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true))
-                .on_press(Message::MediaPrevious),
-            button::icon(icon::from_name(play_pause_icon).size(20).symbolic(true))
-                .on_press(play_pause_msg),
-            button::icon(icon::from_name("media-skip-forward-symbolic").size(16).symbolic(true))
-                .on_press(Message::MediaNext),
+            prev_btn,
+            play_pause_btn,
+            next_btn,
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -224,9 +238,9 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         split_tile(
             "bluetooth-active-symbolic",
             if app.bluetooth_available { fl!("bluetooth") } else { "Unavailable".to_string() },
-            app.bluetooth_enabled,
+            app.bluer_state.bluetooth_enabled,
             app.bluetooth_available,
-            Message::ToggleBluetooth(!app.bluetooth_enabled),
+            Message::ToggleBluetooth(!app.bluer_state.bluetooth_enabled),
             if app.bluetooth_available { Some(Message::Navigate(AppView::BluetoothDetails)) } else { None },
         ),
     ]
@@ -382,20 +396,36 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
 
     let battery_text = if app.battery_charging && app.battery_percent >= 99.0 {
         fl!("fully-charged")
+    } else if app.battery_charging {
+        if let Some(secs) = app.time_to_full {
+            let hours = secs / 3600;
+            let minutes = (secs % 3600) / 60;
+            if hours == 0 && minutes == 0 {
+                format!("{:.0}% — {}", app.battery_percent, fl!("charging"))
+            } else if hours == 0 {
+                format!("{:.0}% — {}m until full", app.battery_percent, minutes)
+            } else if minutes == 0 {
+                format!("{:.0}% — {}h until full", app.battery_percent, hours)
+            } else {
+                format!("{:.0}% — {}h {}m until full", app.battery_percent, hours, minutes)
+            }
+        } else {
+            format!("{:.0}% — {}", app.battery_percent, fl!("charging"))
+        }
     } else if let Some(secs) = app.time_to_empty {
         let hours = secs / 3600;
         let minutes = (secs % 3600) / 60;
-        format!("{:.0}% — {}h {}m remaining", app.battery_percent, hours, minutes)
+        if hours == 0 && minutes == 0 {
+            format!("{:.0}% — Less than a minute remaining", app.battery_percent)
+        } else if hours == 0 {
+            format!("{:.0}% — {}m remaining", app.battery_percent, minutes)
+        } else if minutes == 0 {
+            format!("{:.0}% — {}h remaining", app.battery_percent, hours)
+        } else {
+            format!("{:.0}% — {}h {}m remaining", app.battery_percent, hours, minutes)
+        }
     } else {
-        format!(
-            "{:.0}% — {}",
-            app.battery_percent,
-            if app.battery_charging {
-                fl!("charging")
-            } else {
-                fl!("on-battery")
-            }
-        )
+        format!("{:.0}% — {}", app.battery_percent, fl!("on-battery"))
     };
 
     let battery_info: Element<'_, Message> = if app.has_battery {

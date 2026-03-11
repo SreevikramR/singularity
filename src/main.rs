@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-mod app;
-mod config;
+pub mod app;
+pub mod bluetooth;
+pub mod config;
+pub mod network;
 mod i18n;
 mod subscriptions;
 mod views;

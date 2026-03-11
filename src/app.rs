@@ -3,12 +3,21 @@
 use crate::config::Config;
 use crate::subscriptions::mpris::{self, MprisUpdate, PlayerStatus};
 use crate::views;
+use crate::bluetooth::{self, BluerState, BluerRequest, BluerEvent, BluerAgentEvent, BluerDevice};
+use crate::network::*;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{window, Limits, Subscription};
+
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
+pub enum IsOpen {
+    #[default]
+    None,
+    Output,
+    Input,
+}
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::prelude::*;
 
-use std::time::Duration;
 
 // Re-export subscription event types
 use cosmic_settings_daemon_subscription as brightness_sub;
@@ -18,7 +27,15 @@ use cosmic_settings_upower_subscription::kbdbacklight::{
 };
 use cosmic_settings_network_manager_subscription::{
     self as nm_sub, Event as NmEvent, NetworkManagerState, Request as NmRequest,
+    nm_secret_agent, UUID, hw_address::HwAddress, available_wifi::AccessPoint,
+    current_networks::ActiveConnectionInfo,
 };
+use indexmap::IndexMap;
+use rustc_hash::FxHashSet;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use zbus::Connection;
+use secure_string::SecureString;
 
 // ── View routing ─────────────────────────────────────────────────────────────
 
@@ -65,7 +82,6 @@ pub struct AppModel {
     pub current_view: AppView,
 
     // ── Quick-settings tile states ──
-    pub bluetooth_enabled: bool,
     pub vpn_active: bool,
     pub global_mute: bool,
     pub power_profile: PowerProfile,
@@ -87,25 +103,44 @@ pub struct AppModel {
     pub battery_charging: bool,
     pub has_battery: bool,
     pub time_to_empty: Option<i64>,
+    pub time_to_full: Option<i64>,
 
     // ── NetworkManager ──
     pub nm_state: NetworkManagerState,
     pub nm_sender: Option<futures::channel::mpsc::UnboundedSender<NmRequest>>,
+    pub show_visible_networks: bool,
+    pub new_connection: Option<NewConnectionState>,
+    pub conn: Option<Connection>,
+    pub secret_tx: Option<tokio::sync::mpsc::Sender<nm_secret_agent::Request>>,
+    pub known_vpns: IndexMap<UUID, ConnectionSettings>,
+    pub ssid_to_uuid: BTreeMap<Box<str>, Box<str>>,
+    pub failed_known_ssids: FxHashSet<Arc<str>>,
+    pub requested_vpn: Option<RequestedVpn>,
+    pub nm_task: Option<tokio::sync::oneshot::Sender<()>>,
+    pub nm_devices: Vec<Arc<cosmic_settings_network_manager_subscription::devices::DeviceInfo>>,
 
     // ── MPRIS ──
     pub player_status: Option<PlayerStatus>,
 
     // ── Sound ──
     pub sound: cosmic_settings_sound_subscription::Model,
+    pub is_open: IsOpen,
+    pub max_sink_volume: u32,
+    pub max_source_volume: u32,
 
-    // ── Bluetooth ──
-    pub bt_adapters: std::collections::HashMap<zbus::zvariant::OwnedObjectPath, cosmic_settings_bluetooth_subscription::Adapter>,
-    pub bt_devices: std::collections::HashMap<zbus::zvariant::OwnedObjectPath, cosmic_settings_bluetooth_subscription::Device>,
+    // ── Bluetooth (Bluer) ──
+    pub bluer_state: BluerState,
+    pub bluer_sender: Option<tokio::sync::mpsc::Sender<BluerRequest>>,
+    pub show_visible_devices: bool,
+    pub request_confirmation: Option<(BluerDevice, String, tokio::sync::mpsc::Sender<bool>)>,
 
     // ── Service Availability ──
     pub bluetooth_available: bool,
     pub network_available: bool,
     pub sound_available: bool,
+    
+    // ── Screenshot ──
+    pub pending_screenshot: bool,
 }
 
 impl Default for AppModel {
@@ -115,7 +150,6 @@ impl Default for AppModel {
             popup: None,
             config: Config::default(),
             current_view: AppView::Main,
-            bluetooth_enabled: false,
             vpn_active: false,
             global_mute: false,
             power_profile: PowerProfile::Balanced,
@@ -130,15 +164,32 @@ impl Default for AppModel {
             battery_charging: false,
             has_battery: true,
             time_to_empty: None,
+            time_to_full: None,
             nm_state: NetworkManagerState::default(),
             nm_sender: None,
+            show_visible_networks: false,
+            new_connection: None,
+            conn: None,
+            secret_tx: None,
+            known_vpns: IndexMap::new(),
+            ssid_to_uuid: BTreeMap::new(),
+            failed_known_ssids: FxHashSet::default(),
+            requested_vpn: None,
+            nm_task: None,
+            nm_devices: Vec::new(),
             player_status: None,
             sound: Default::default(),
-            bt_adapters: std::collections::HashMap::new(),
-            bt_devices: std::collections::HashMap::new(),
+            is_open: IsOpen::None,
+            max_sink_volume: 150, // Arbitrary default or cosmic config
+            max_source_volume: 150,
+            bluer_state: Default::default(),
+            bluer_sender: None,
+            show_visible_devices: false,
+            request_confirmation: None,
             bluetooth_available: false,
             network_available: false,
             sound_available: false,
+            pending_screenshot: false,
         }
     }
 }
@@ -163,6 +214,7 @@ pub enum Message {
 
     // Sliders
     SetVolume(u32),
+    SetSourceVolume(u32),
     SetBrightness(u32),
     SetKbdBrightness(u32),
     SetDefaultSink(usize),
@@ -186,6 +238,11 @@ pub enum Message {
     Suspend,
     OpenSettings(Option<String>),
 
+    // Sound specific toggles
+    OutputToggle,
+    InputToggle,
+    ToggleSourceMute,
+
     // System
     UpdateConfig(Config),
 
@@ -195,7 +252,39 @@ pub enum Message {
     Brightness(brightness_sub::Event),
     NetworkManager(NmEvent),
     Sound(cosmic_settings_sound_subscription::Message),
-    Bluetooth(cosmic_settings_bluetooth_subscription::Event),
+    
+    // ── Network Manager Detailed Requests ──
+    ToggleVisibleNetworks,
+    SelectWirelessAccessPoint(AccessPoint),
+    CancelNewConnection,
+    Connect(nm_sub::SSID, HwAddress),
+    ConnectWithPassword,
+    Disconnect(nm_sub::SSID, HwAddress),
+    PasswordUpdate(SecureString),
+    IdentityUpdate(String),
+    TogglePasswordVisibility,
+    SecretAgent(nm_secret_agent::Event),
+    NetworkManagerConnect(Connection),
+    ConnectionSettings(BTreeMap<Box<str>, Box<str>>),
+    KnownConnections(IndexMap<UUID, ConnectionSettings>),
+    ResetFailedKnownSsid(String, HwAddress),
+    ActivateVpn(Arc<str>),
+    DeactivateVpn(Arc<str>),
+    ToggleVpnPasswordVisibility,
+    ConnectVPNWithPassword,
+    VPNPasswordUpdate(SecureString),
+    CancelVPNConnection,
+    UpdateState(NetworkManagerState),
+    UpdateDevices(Vec<cosmic_settings_network_manager_subscription::devices::DeviceInfo>),
+    Refresh,
+    Error(String),
+    
+    // ── Bluer Bluetooth ──
+    BluetoothEvent(BluerEvent),
+    BluetoothRequest(BluerRequest),
+    ConfirmPairing,
+    CancelPairing,
+    ToggleVisibleDevices(bool),
 }
 
 // ── Application implementation ───────────────────────────────────────────────
@@ -233,18 +322,8 @@ impl cosmic::Application for AppModel {
             ..Default::default()
         };
 
-        let init_task = Task::perform(
-            async move {
-                if let Ok(conn) = zbus::Connection::system().await {
-                    cosmic_settings_bluetooth_subscription::get_adapters(conn).await
-                } else {
-                    cosmic_settings_bluetooth_subscription::Event::SetAdapters(std::collections::HashMap::new())
-                }
-            },
-            |m| cosmic::Action::App(Message::Bluetooth(m))
-        );
-
-        (app, init_task)
+        // Bluetooth discovery doesn't need an init task like the subscription crate did
+        (app, Task::none())
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -254,9 +333,76 @@ impl cosmic::Application for AppModel {
     // ── Panel button: pill-shaped with 3 dynamic icons ───────────────────
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let volume_icon = if self.volume == 0 || self.global_mute {
+            "audio-volume-muted-symbolic"
+        } else if self.volume < 33 {
+            "audio-volume-low-symbolic"
+        } else if self.volume < 66 {
+            "audio-volume-medium-symbolic"
+        } else {
+            "audio-volume-high-symbolic"
+        };
+
+        let mut wifi_icon = "network-wireless-offline-symbolic";
+        if self.nm_state.wifi_enabled {
+            wifi_icon = "network-wireless-disconnected-symbolic";
+            
+            let mut active_ssid = None;
+            for conn in &self.nm_state.active_conns {
+                if let nm_sub::ActiveConnectionInfo::WiFi { name, .. } = conn {
+                    active_ssid = Some(name.clone());
+                    break;
+                }
+            }
+
+            if let Some(ssid) = active_ssid {
+                wifi_icon = "network-wireless-symbolic";
+                for ap in &self.nm_state.wireless_access_points {
+                    if ap.ssid.as_ref() == ssid.as_str() {
+                        if ap.strength > 75 {
+                            wifi_icon = "network-wireless-signal-excellent-symbolic";
+                        } else if ap.strength > 50 {
+                            wifi_icon = "network-wireless-signal-good-symbolic";
+                        } else if ap.strength > 25 {
+                            wifi_icon = "network-wireless-signal-ok-symbolic";
+                        } else {
+                            wifi_icon = "network-wireless-signal-weak-symbolic";
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut battery_icon = None;
+        if self.has_battery {
+            if self.battery_charging {
+                battery_icon = Some("battery-full-charging-symbolic");
+            } else if self.battery_percent > 80.0 {
+                battery_icon = Some("battery-full-symbolic");
+            } else if self.battery_percent > 50.0 {
+                battery_icon = Some("battery-good-symbolic");
+            } else if self.battery_percent > 20.0 {
+                battery_icon = Some("battery-low-symbolic");
+            } else {
+                battery_icon = Some("battery-caution-symbolic");
+            }
+        }
+
+        let mut icons_row = cosmic::iced::widget::row![
+            cosmic::widget::icon::from_name(volume_icon).size(16).symbolic(true),
+            cosmic::widget::icon::from_name(wifi_icon).size(16).symbolic(true),
+        ]
+        .spacing(8)
+        .align_y(cosmic::iced::Alignment::Center);
+
+        if let Some(bat_icon) = battery_icon {
+            icons_row = icons_row.push(cosmic::widget::icon::from_name(bat_icon).size(16).symbolic(true));
+        }
+
         self.core
             .applet
-            .icon_button("preferences-system-symbolic")
+            .button_from_element(icons_row, true)
             .on_press(Message::TogglePopup)
             .into()
     }
@@ -295,7 +441,7 @@ impl cosmic::Application for AppModel {
             // Sound/Audio
             Subscription::run_with("singularity-sound", get_sound_watch).map(Message::Sound),
             // Bluetooth
-            cosmic_settings_bluetooth_subscription::subscription().map(Message::Bluetooth),
+            bluetooth::bluetooth_subscription(3u8).map(Message::BluetoothEvent),
         ])
     }
 
@@ -304,6 +450,7 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         tracing::debug!("Received message: {:?}", message);
         match message {
+
             // ── Navigation ───────────────────────────────────────────
             Message::Navigate(view) => {
                 self.current_view = view;
@@ -321,34 +468,46 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::ToggleBluetooth(v) => {
-                self.bluetooth_enabled = v;
-                if let Some(path) = self.bt_adapters.keys().next().cloned() {
-                    return Task::perform(
-                        async move {
-                            if let Ok(conn) = zbus::Connection::system().await {
-                                cosmic_settings_bluetooth_subscription::change_adapter_status(conn, path, v).await
-                            } else {
-                                cosmic_settings_bluetooth_subscription::Event::SetAdapters(std::collections::HashMap::new())
-                            }
-                        },
-                        |_m| cosmic::Action::App(Message::Bluetooth(_m))
-                    );
-                }
+                return Task::perform(
+                    async move { v },
+                    |enabled| cosmic::Action::App(Message::BluetoothRequest(BluerRequest::SetBluetoothEnabled(enabled))),
+                );
             }
             Message::ToggleVpn(v) => self.vpn_active = v,
             Message::ToggleGlobalMute(_v) => {
                 self.sound.toggle_sink_mute();
                 self.global_mute = self.sound.sink_mute;
             }
+            Message::ToggleSourceMute => {
+                self.sound.toggle_source_mute();
+            }
             Message::CyclePowerProfile => {
                 self.power_profile = self.power_profile.next();
             }
 
             // ── Sliders ──────────────────────────────────────────────
+            Message::InputToggle => {
+                self.is_open = if self.is_open == IsOpen::Input {
+                    IsOpen::None
+                } else {
+                    IsOpen::Input
+                };
+            }
+            Message::OutputToggle => {
+                self.is_open = if self.is_open == IsOpen::Output {
+                    IsOpen::None
+                } else {
+                    IsOpen::Output
+                };
+            }
             Message::SetVolume(v) => {
                 self.volume = v;
                 return self.sound.set_sink_volume(v)
-                    .map(|m| cosmic::Action::App(Message::Sound(m)));
+                    .map(|msg| cosmic::Action::App(Message::Sound(msg)));
+            }
+            Message::SetSourceVolume(v) => {
+                return self.sound.set_source_volume(v)
+                    .map(|msg| cosmic::Action::App(Message::Sound(msg)));
             }
             Message::SetBrightness(v) => {
                 self.brightness = v;
@@ -382,14 +541,17 @@ impl cosmic::Application for AppModel {
                     on_battery,
                     percent,
                     time_to_empty,
+                    time_to_full,
                 } => {
                     self.has_battery = true;
                     self.battery_charging = !on_battery;
                     self.battery_percent = percent;
                     if on_battery {
                         self.time_to_empty = Some(time_to_empty);
+                        self.time_to_full = None;
                     } else {
                         self.time_to_empty = None;
+                        self.time_to_full = Some(time_to_full);
                     }
                 }
             },
@@ -438,7 +600,46 @@ impl cosmic::Application for AppModel {
                             let _ = sender.unbounded_send(NmRequest::Reload);
                         }
                     }
-                    NmEvent::RequestResponse { state, .. } => {
+                    NmEvent::RequestResponse { state, success, req } => {
+                        if !success {
+                            tracing::error!("NetworkManager request error on {:?}", req);
+                        }
+                        
+                        match &req {
+                            nm_sub::Request::SelectAccessPoint(ssid, _, _, _) => {
+                                let conn_match = self.new_connection.as_ref().is_some_and(|c| {
+                                    match c {
+                                        NewConnectionState::EnterPassword { access_point, .. } => access_point.ssid.as_ref() == ssid.as_ref(),
+                                        NewConnectionState::Waiting(access_point) => access_point.ssid.as_ref() == ssid.as_ref(),
+                                        NewConnectionState::Failure(access_point) => access_point.ssid.as_ref() == ssid.as_ref(),
+                                    }
+                                });
+
+                                if conn_match && success {
+                                    self.new_connection = None;
+                                    self.show_visible_networks = false;
+                                    self.failed_known_ssids.remove(ssid.as_ref());
+                                } else if !matches!(&self.new_connection, Some(NewConnectionState::EnterPassword { .. })) && !success {
+                                    self.failed_known_ssids.insert(ssid.as_ref().into());
+                                }
+                            }
+                            nm_sub::Request::Authenticate { ssid, .. } => {
+                                if let Some(NewConnectionState::Waiting(access_point)) = self.new_connection.as_ref() {
+                                    if !success && ssid.as_str() == access_point.ssid.as_ref() {
+                                        self.new_connection = Some(NewConnectionState::Failure(access_point.clone()));
+                                    } else {
+                                        self.show_visible_networks = false;
+                                    }
+                                } else if let Some(NewConnectionState::EnterPassword { access_point, .. }) = self.new_connection.as_ref() {
+                                    if success && ssid.as_str() == access_point.ssid.as_ref() {
+                                        self.new_connection = None;
+                                        self.show_visible_networks = false;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+
                         self.nm_state = state;
                         self.vpn_active = self.nm_state.active_conns.iter().any(|c| matches!(c, cosmic_settings_network_manager_subscription::ActiveConnectionInfo::Vpn { .. }));
                     }
@@ -465,49 +666,89 @@ impl cosmic::Application for AppModel {
                 return task;
             }
 
-            // ── D-Bus: Bluetooth ─────────────────────────────────────────────
-            Message::Bluetooth(event) => {
-                use cosmic_settings_bluetooth_subscription::Event as BtEvent;
-                match event {
-                    BtEvent::SetAdapters(adapters) => {
+            // ── D-Bus: Bluetooth (Bluer) ─────────────────────────────────────
+            Message::BluetoothEvent(e) => {
+                match e {
+                    BluerEvent::RequestResponse {
+                        req: _,
+                        state,
+                        err_msg,
+                    } => {
+                        if let Some(err_msg) = err_msg {
+                            tracing::error!("bluetooth request error: {err_msg}");
+                        }
+                        self.bluer_state = state;
                         self.bluetooth_available = true;
-                        self.bt_adapters = adapters;
-                        if let Some((path, adapter)) = self.bt_adapters.iter().next() {
-                            self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
-                            let path = path.clone();
-                            return cosmic::Task::perform(
-                                async move {
-                                    if let Ok(conn) = zbus::Connection::system().await {
-                                        cosmic_settings_bluetooth_subscription::get_devices(conn, path).await
-                                    } else {
-                                        cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
-                                    }
-                                },
-                                |m| cosmic::Action::App(Message::Bluetooth(m))
-                            );
+                    }
+                    BluerEvent::Init { sender, state } => {
+                        self.bluer_sender.replace(sender);
+                        self.bluer_state = state;
+                        self.bluetooth_available = true;
+                    }
+                    BluerEvent::DevicesChanged { state } => {
+                        self.bluer_state = state;
+                        self.bluetooth_available = true;
+                    }
+                    BluerEvent::Finished => {
+                        tracing::error!("bluetooth subscription finished");
+                        self.bluetooth_available = false;
+                    }
+                    BluerEvent::AgentEvent(event) => match event {
+                        BluerAgentEvent::RequestConfirmation(d, code, tx) => {
+                            self.request_confirmation.replace((d, code, tx));
+                        }
+                        _ => {
+                            // Other agent events (PinCode display, Passkey display) can be handled later
+                            tracing::info!("AgentEvent received but not yet implemented in UI: {:?}", event);
+                        }
+                    },
+                }
+            }
+            Message::BluetoothRequest(r) => {
+                // Optimistic UI updates
+                match &r {
+                    BluerRequest::SetBluetoothEnabled(enabled) => {
+                        self.bluer_state.bluetooth_enabled = *enabled;
+                    }
+                    BluerRequest::ConnectDevice(add) => {
+                        if let Some(d) = self.bluer_state.devices.iter_mut().find(|d| d.address == *add) {
+                            d.status = bluetooth::BluerDeviceStatus::Connecting;
                         }
                     }
-                    BtEvent::SetDevices(devices) => self.bt_devices = devices,
-                    BtEvent::AddedAdapter(path, adapter) => {
-                        self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
-                        self.bt_adapters.insert(path, adapter);
-                    },
-                    BtEvent::AddedDevice(path, device) => { self.bt_devices.insert(path, device); },
-                    BtEvent::RemovedAdapter(path) => { self.bt_adapters.remove(&path); },
-                    BtEvent::RemovedDevice(path) => { self.bt_devices.remove(&path); },
-                    BtEvent::UpdatedAdapter(path, updates) => {
-                        if let Some(adapter) = self.bt_adapters.get_mut(&path) {
-                            adapter.update(updates);
-                            self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
+                    BluerRequest::DisconnectDevice(add) => {
+                        if let Some(d) = self.bluer_state.devices.iter_mut().find(|d| d.address == *add) {
+                            d.status = bluetooth::BluerDeviceStatus::Disconnecting;
                         }
-                    },
-                    BtEvent::UpdatedDevice(path, updates) => {
-                        if let Some(device) = self.bt_devices.get_mut(&path) {
-                            device.update(updates);
+                    }
+                    BluerRequest::PairDevice(add) => {
+                        if let Some(d) = self.bluer_state.devices.iter_mut().find(|d| d.address == *add) {
+                            d.status = bluetooth::BluerDeviceStatus::Pairing;
                         }
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
+                if let Some(tx) = self.bluer_sender.clone() {
+                    tokio::spawn(async move {
+                        let _ = tx.try_send(r);
+                    });
+                }
+            }
+            Message::ConfirmPairing => {
+                if let Some((_, _, tx)) = self.request_confirmation.take() {
+                    tokio::spawn(async move {
+                        let _ = tx.try_send(true);
+                    });
+                }
+            }
+            Message::CancelPairing => {
+                if let Some((_, _, tx)) = self.request_confirmation.take() {
+                    tokio::spawn(async move {
+                        let _ = tx.try_send(false);
+                    });
+                }
+            }
+            Message::ToggleVisibleDevices(enabled) => {
+                self.show_visible_devices = enabled;
             }
 
             // ── MPRIS ────────────────────────────────────────────────
@@ -567,21 +808,14 @@ impl cosmic::Application for AppModel {
 
             // ── Screenshot ───────────────────────────────────────────
             Message::TakeScreenshot => {
-                // Close the popup first, then schedule screenshot after delay
-                let close_task = if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
+                // Close the popup first, and flag that we are waiting to screenshot
+                self.pending_screenshot = true;
+                
+                if let Some(p) = self.popup.take() {
+                    return destroy_popup(p);
                 } else {
-                    Task::none()
-                };
-
-                let screenshot_task = Task::perform(
-                    async {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    },
-                    |_| cosmic::Action::App(Message::ExecuteScreenshot),
-                );
-
-                return Task::batch([close_task, screenshot_task]);
+                    return Task::perform(async {}, |_| cosmic::Action::App(Message::ExecuteScreenshot));
+                }
             }
             Message::ExecuteScreenshot => {
                 let cmd = if self.config.screenshot_command.is_empty() {
@@ -638,6 +872,339 @@ impl cosmic::Application for AppModel {
                     |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
                 );
             }
+            // ── Network Manager Actions ─────────────────────────────
+            Message::ToggleVisibleNetworks => {
+                self.show_visible_networks = !self.show_visible_networks;
+            }
+            Message::SelectWirelessAccessPoint(access_point) => {
+                let Some(tx) = self.nm_sender.as_ref() else {
+                    return Task::none();
+                };
+
+                if matches!(access_point.network_type, nm_sub::available_wifi::NetworkType::Open) {
+                    if let Err(err) =
+                        tx.unbounded_send(nm_sub::Request::SelectAccessPoint(
+                            access_point.ssid.clone(),
+                            access_point.network_type,
+                            self.secret_tx.clone(),
+                            None,
+                        ))
+                    {
+                        if err.is_disconnected() {
+                            return crate::network::system_conn().map(cosmic::Action::App);
+                        }
+
+                        tracing::error!("{err:?}");
+                    }
+                    self.new_connection = Some(NewConnectionState::Waiting(access_point));
+                } else {
+                    if self
+                        .nm_state
+                        .known_access_points
+                        .contains(&access_point)
+                    {
+                        if let Err(err) =
+                            tx.unbounded_send(nm_sub::Request::SelectAccessPoint(
+                                access_point.ssid.clone(),
+                                access_point.network_type,
+                                self.secret_tx.clone(),
+                                None,
+                            ))
+                        {
+                            if err.is_disconnected() {
+                                return crate::network::system_conn().map(cosmic::Action::App);
+                            }
+
+                            tracing::error!("{err:?}");
+                        }
+                    }
+                    self.new_connection = Some(NewConnectionState::EnterPassword {
+                        access_point,
+                        description: None,
+                        identity: String::new(),
+                        password: String::new().into(),
+                        password_hidden: true,
+                    });
+                }
+            }
+            Message::CancelNewConnection => {
+                self.new_connection = None;
+            }
+            Message::Connect(ssid, hw_address) => {
+                let mut network_type = nm_sub::available_wifi::NetworkType::Open;
+                let tx = if let Some(tx) = self.nm_sender.as_ref() {
+                    if let Some(ap) = self
+                        .nm_state
+                        .known_access_points
+                        .iter_mut()
+                        .find(|c| c.ssid == ssid && c.hw_address == hw_address)
+                    {
+                        network_type = ap.network_type;
+                        ap.working = true;
+                    }
+                    tx
+                } else {
+                    return Task::none();
+                };
+                if let Err(err) = tx.unbounded_send(nm_sub::Request::SelectAccessPoint(
+                    ssid,
+                    network_type,
+                    self.secret_tx.clone(),
+                    None,
+                )) {
+                    if err.is_disconnected() {
+                        return crate::network::system_conn().map(cosmic::Action::App);
+                    }
+                    tracing::error!("{err:?}");
+                }
+            }
+            Message::ConnectWithPassword => {
+                let Some(tx) = self.nm_sender.as_ref() else {
+                    return Task::none();
+                };
+
+                if let Some(NewConnectionState::EnterPassword {
+                    password,
+                    access_point,
+                    identity,
+                    ..
+                }) = self.new_connection.take()
+                {
+                    let is_enterprise: bool = matches!(access_point.network_type, nm_sub::available_wifi::NetworkType::EAP);
+
+                    if let Err(err) = tx.unbounded_send(nm_sub::Request::Authenticate {
+                        ssid: access_point.ssid.to_string(),
+                        identity: is_enterprise.then(|| identity.clone()),
+                        password,
+                        secret_tx: self.secret_tx.clone(),
+                        interface: None,
+                    }) {
+                        if err.is_disconnected() {
+                            return crate::network::system_conn().map(cosmic::Action::App);
+                        }
+                        tracing::error!("Failed to authenticate with network manager");
+                    }
+                    self.new_connection
+                        .replace(NewConnectionState::Waiting(access_point));
+                }
+            }
+            Message::Disconnect(ssid, hw_address) => {
+                self.new_connection = None;
+                let tx = if let Some(tx) = self.nm_sender.as_ref() {
+                    if let Some(ActiveConnectionInfo::WiFi { state, .. }) =
+                        self.nm_state.active_conns.iter_mut().find(|c| {
+                            let c_hw_address = match c {
+                                ActiveConnectionInfo::Wired { hw_address, .. }
+                                | ActiveConnectionInfo::WiFi { hw_address, .. } => {
+                                    HwAddress::from_str(hw_address).unwrap_or_default()
+                                }
+                                ActiveConnectionInfo::Vpn { .. } => HwAddress::default(),
+                            };
+                            c.name().as_str() == ssid.as_ref() && c_hw_address == hw_address
+                        })
+                    {
+                        *state = cosmic_dbus_networkmanager::interface::enums::ActiveConnectionState::Deactivating;
+                    }
+                    tx
+                } else {
+                    return Task::none();
+                };
+                if let Err(err) = tx.unbounded_send(nm_sub::Request::Disconnect(ssid)) {
+                    if err.is_disconnected() {
+                        return crate::network::system_conn().map(cosmic::Action::App);
+                    }
+                    tracing::error!("{err:?}");
+                }
+            }
+            Message::PasswordUpdate(pwd) => {
+                if let Some(NewConnectionState::EnterPassword { password, .. }) = &mut self.new_connection {
+                    *password = pwd;
+                }
+            }
+            Message::IdentityUpdate(identity) => {
+                if let Some(NewConnectionState::EnterPassword { identity: current, .. }) = &mut self.new_connection {
+                    *current = identity;
+                }
+            }
+            Message::TogglePasswordVisibility => {
+                if let Some(NewConnectionState::EnterPassword { password_hidden, .. }) = &mut self.new_connection {
+                    *password_hidden = !*password_hidden;
+                }
+            }
+            Message::SecretAgent(agent_event) => match agent_event {
+                nm_secret_agent::Event::RequestSecret {
+                    uuid,
+                    name,
+                    description,
+                    previous,
+                    tx,
+                    ..
+                } => {
+                    if let Some(state) = self.new_connection.as_mut() {
+                        match state {
+                            NewConnectionState::EnterPassword { access_point, .. }
+                            | NewConnectionState::Waiting(access_point)
+                            | NewConnectionState::Failure(access_point) => {
+                                if self
+                                    .ssid_to_uuid
+                                    .get(access_point.ssid.as_ref())
+                                    .is_some_and(|ap_uuid| ap_uuid.as_ref() == uuid.as_str())
+                                {
+                                    *state = NewConnectionState::EnterPassword {
+                                        access_point: access_point.clone(),
+                                        description,
+                                        identity: String::new(),
+                                        password: String::new().into(),
+                                        password_hidden: true,
+                                    }
+                                }
+                            }
+                        }
+                    } else if self.known_vpns.contains_key(uuid.as_str()) {
+                        self.requested_vpn = Some(RequestedVpn {
+                            name,
+                            uuid: uuid.into(),
+                            description,
+                            password: previous,
+                            password_hidden: true,
+                            tx,
+                        });
+                    }
+                }
+                nm_secret_agent::Event::CancelGetSecrets { .. } => {
+                    self.new_connection = None;
+                    self.requested_vpn = None;
+                }
+                nm_secret_agent::Event::Failed(error) => {
+                    tracing::error!("Error from secret agent: {error:?}");
+                }
+            },
+            Message::NetworkManagerConnect(conn) => {
+                self.conn = Some(conn);
+            }
+            Message::ConnectionSettings(settings) => {
+                self.ssid_to_uuid = settings;
+            }
+            Message::KnownConnections(known) => {
+                self.known_vpns = known;
+            }
+            Message::ResetFailedKnownSsid(ssid, hw_address) => {
+                let ap = if let Some(pos) = self
+                    .nm_state
+                    .known_access_points
+                    .iter()
+                    .position(|ap| ap.ssid.as_ref() == ssid.as_str() && ap.hw_address == hw_address)
+                {
+                    self.nm_state.known_access_points.remove(pos)
+                } else if let Some((pos, ap)) = self
+                    .nm_state
+                    .active_conns
+                    .iter()
+                    .position(|conn| {
+                        let c_hw_address = match conn {
+                            ActiveConnectionInfo::Wired { hw_address, .. }
+                            | ActiveConnectionInfo::WiFi { hw_address, .. } => {
+                                HwAddress::from_str(hw_address).unwrap_or_default()
+                            }
+                            ActiveConnectionInfo::Vpn { .. } => HwAddress::default(),
+                        };
+                        conn.name() == ssid && c_hw_address == hw_address
+                    })
+                    .zip(
+                        self.nm_state
+                            .wireless_access_points
+                            .iter()
+                            .find(|ap| {
+                                ap.ssid.as_ref() == ssid.as_str() && ap.hw_address == hw_address
+                            }),
+                    )
+                {
+                    self.nm_state.active_conns.remove(pos);
+                    ap.clone()
+                } else {
+                    tracing::warn!("Failed to find known access point with ssid: {}", ssid);
+                    return Task::none();
+                };
+                if let Some(tx) = self.nm_sender.as_ref() {
+                    if let Err(err) =
+                        tx.unbounded_send(nm_sub::Request::Forget(ssid.into()))
+                    {
+                        if err.is_disconnected() {
+                            return crate::network::system_conn().map(cosmic::Action::App);
+                        }
+
+                        tracing::error!("{err:?}");
+                    }
+                    self.show_visible_networks = true;
+                    return self.update(Message::SelectWirelessAccessPoint(ap));
+                }
+            }
+            Message::ActivateVpn(uuid) => {
+                if let Some((tx, conn)) = self.nm_sender.clone().zip(self.conn.clone()) {
+                    return crate::network::connect_vpn(conn, tx, uuid).map(cosmic::Action::App);
+                }
+            }
+            Message::DeactivateVpn(uuid) => {
+                let name = if let Some(connection) = self.known_vpns.get(uuid.as_ref()) {
+                    match connection {
+                        crate::network::ConnectionSettings::Vpn(connection) => connection.id.clone(),
+                        crate::network::ConnectionSettings::Wireguard { id } => id.clone(),
+                    }
+                } else {
+                    return Task::none();
+                };
+                if let Some(tx) = self.nm_sender.as_ref() {
+                    if let Err(err) = tx.unbounded_send(nm_sub::Request::Deactivate(name.into()))
+                    {
+                        if err.is_disconnected() {
+                            return crate::network::system_conn().map(cosmic::Action::App);
+                        }
+                        tracing::error!("{err:?}");
+                    }
+                }
+            }
+            Message::ToggleVpnPasswordVisibility => {
+                if let Some(requested_vpn) = self.requested_vpn.as_mut() {
+                    requested_vpn.password_hidden = !requested_vpn.password_hidden;
+                }
+            }
+            Message::ConnectVPNWithPassword => {
+                if let Some(RequestedVpn { password, tx, .. }) = self.requested_vpn.take() {
+                    return Task::future(async move {
+                        let mut guard = tx.lock().await;
+                        if let Some(tx) = guard.take() {
+                            let _ = tx.send(password);
+                        }
+                        Message::Refresh
+                    }).map(cosmic::Action::App);
+                }
+            }
+            Message::VPNPasswordUpdate(pwd) => {
+                if let Some(requested_vpn) = self.requested_vpn.as_mut() {
+                    requested_vpn.password = pwd;
+                }
+            }
+            Message::CancelVPNConnection => {
+                self.requested_vpn = None;
+            }
+            Message::UpdateState(state) => {
+                self.nm_state = state;
+            }
+            Message::UpdateDevices(devices) => {
+                self.nm_devices = devices.into_iter().map(Arc::new).collect();
+            }
+            Message::Refresh => {
+                if let Some(conn) = self.conn.clone() {
+                    return Task::batch(vec![
+                        crate::network::update_state(conn.clone()),
+                        crate::network::update_devices(conn.clone()),
+                        crate::network::load_vpns(conn),
+                    ]).map(cosmic::Action::App);
+                }
+            }
+            Message::Error(err) => {
+                tracing::error!("Network applet error: {}", err);
+            }
 
             // ── Popup lifecycle ──────────────────────────────────────
             Message::TogglePopup => {
@@ -661,15 +1228,25 @@ impl cosmic::Application for AppModel {
                         .min_width(400.0)
                         .min_height(300.0)
                         .max_height(1080.0);
+                        
+                    // Make sure bluetooth discovery is enabled while popup is open
+                    bluetooth::set_discovery(true);
+                    
                     get_popup(popup_settings)
                 } else {
+                    bluetooth::set_discovery(false);
                     Task::none()
                 };
             }
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
+                    bluetooth::set_discovery(false);
                     self.popup = None;
                     self.current_view = AppView::Main;
+                }
+                if self.pending_screenshot {
+                    self.pending_screenshot = false;
+                    return Task::perform(async {}, |_| cosmic::Action::App(Message::ExecuteScreenshot));
                 }
             }
         }
