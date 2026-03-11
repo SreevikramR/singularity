@@ -28,17 +28,17 @@ pub fn audio_details_view(app: &AppModel) -> Element<'_, Message> {
 
     for (index, name) in app.sound.sinks().iter().enumerate() {
         let active = app.sound.active_sink() == Some(index);
-        let check_icon = if active {
-            "object-select-symbolic"
+        let check_icon: Element<'_, Message> = if active {
+            icon::from_name("object-select-symbolic").size(16).symbolic(true).into()
         } else {
-            ""
+            cosmic::iced::widget::Space::new().width(Length::Fixed(16.0)).into()
         };
 
         let dev_row = cosmic::widget::button::custom(
             row![
                 icon::from_name("audio-speakers-symbolic").size(20).symbolic(true),
                 text::body(name.to_string()).width(Length::Fill),
-                icon::from_name(check_icon).size(16).symbolic(true),
+                check_icon,
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -59,17 +59,17 @@ pub fn audio_details_view(app: &AppModel) -> Element<'_, Message> {
 
     for (index, name) in app.sound.sources().iter().enumerate() {
         let active = app.sound.active_source() == Some(index);
-        let check_icon = if active {
-            "object-select-symbolic"
+        let check_icon: Element<'_, Message> = if active {
+            icon::from_name("object-select-symbolic").size(16).symbolic(true).into()
         } else {
-            ""
+            cosmic::iced::widget::Space::new().width(Length::Fixed(16.0)).into()
         };
 
         let dev_row = cosmic::widget::button::custom(
             row![
                 icon::from_name("audio-input-microphone-symbolic").size(20).symbolic(true),
                 text::body(name.to_string()).width(Length::Fill),
-                icon::from_name(check_icon).size(16).symbolic(true),
+                check_icon,
             ]
             .spacing(8)
             .align_y(Alignment::Center)

@@ -160,8 +160,6 @@ pub enum Message {
     ToggleVpn(bool),
     ToggleGlobalMute(bool),
     CyclePowerProfile,
-    ConnectBluetoothDevice(zbus::zvariant::OwnedObjectPath),
-    DisconnectBluetoothDevice(zbus::zvariant::OwnedObjectPath),
 
     // Sliders
     SetVolume(u32),
@@ -186,7 +184,7 @@ pub enum Message {
     LogOut,
     PowerOff,
     Suspend,
-    OpenSettings,
+    OpenSettings(Option<String>),
 
     // System
     UpdateConfig(Config),
@@ -475,7 +473,7 @@ impl cosmic::Application for AppModel {
                         self.bluetooth_available = true;
                         self.bt_adapters = adapters;
                         if let Some((path, adapter)) = self.bt_adapters.iter().next() {
-                            self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                            self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
                             let path = path.clone();
                             return cosmic::Task::perform(
                                 async move {
@@ -491,7 +489,7 @@ impl cosmic::Application for AppModel {
                     }
                     BtEvent::SetDevices(devices) => self.bt_devices = devices,
                     BtEvent::AddedAdapter(path, adapter) => {
-                        self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                        self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
                         self.bt_adapters.insert(path, adapter);
                     },
                     BtEvent::AddedDevice(path, device) => { self.bt_devices.insert(path, device); },
@@ -500,7 +498,7 @@ impl cosmic::Application for AppModel {
                     BtEvent::UpdatedAdapter(path, updates) => {
                         if let Some(adapter) = self.bt_adapters.get_mut(&path) {
                             adapter.update(updates);
-                            self.bluetooth_enabled = format!("{:?}", adapter.enabled) == "Active";
+                            self.bluetooth_enabled = matches!(adapter.enabled, cosmic_settings_bluetooth_subscription::Active::Enabled);
                         }
                     },
                     BtEvent::UpdatedDevice(path, updates) => {
@@ -510,30 +508,6 @@ impl cosmic::Application for AppModel {
                     },
                     _ => {},
                 }
-            }
-            Message::ConnectBluetoothDevice(path) => {
-                return Task::perform(
-                    async move {
-                        if let Ok(conn) = zbus::Connection::system().await {
-                            cosmic_settings_bluetooth_subscription::connect_device(conn, path).await
-                        } else {
-                            cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
-                        }
-                    },
-                    |_m| cosmic::Action::App(Message::Bluetooth(_m))
-                );
-            }
-            Message::DisconnectBluetoothDevice(path) => {
-                return Task::perform(
-                    async move {
-                        if let Ok(conn) = zbus::Connection::system().await {
-                            cosmic_settings_bluetooth_subscription::disconnect_device(conn, path).await
-                        } else {
-                            cosmic_settings_bluetooth_subscription::Event::SetDevices(std::collections::HashMap::new())
-                        }
-                    },
-                    |_m| cosmic::Action::App(Message::Bluetooth(_m))
-                );
             }
 
             // ── MPRIS ────────────────────────────────────────────────
@@ -652,11 +626,14 @@ impl cosmic::Application for AppModel {
                     |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
                 );
             }
-            Message::OpenSettings => {
+            Message::OpenSettings(page) => {
                 return Task::perform(
-                    async {
-                        let _ = tokio::process::Command::new("cosmic-settings")
-                            .spawn();
+                    async move {
+                        let mut cmd = tokio::process::Command::new("cosmic-settings");
+                        if let Some(p) = page {
+                            cmd.arg(p);
+                        }
+                        let _ = cmd.spawn();
                     },
                     |_| cosmic::Action::App(Message::Navigate(AppView::Main)),
                 );
@@ -669,11 +646,11 @@ impl cosmic::Application for AppModel {
 
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
-                } else {
+                } else if let Some(main_id) = self.core.main_window_id() {
                     let new_id = window::Id::unique();
                     self.popup.replace(new_id);
                     let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
+                        main_id,
                         new_id,
                         None,
                         None,
@@ -685,6 +662,8 @@ impl cosmic::Application for AppModel {
                         .min_height(300.0)
                         .max_height(1080.0);
                     get_popup(popup_settings)
+                } else {
+                    Task::none()
                 };
             }
             Message::PopupClosed(id) => {

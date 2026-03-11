@@ -168,14 +168,11 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
     let controls: Element<'a, Message> = container(
         row![
             button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true))
-                .on_press(Message::MediaPrevious)
-                .padding(4),
+                .on_press(Message::MediaPrevious),
             button::icon(icon::from_name(play_pause_icon).size(20).symbolic(true))
-                .on_press(play_pause_msg)
-                .padding(4),
+                .on_press(play_pause_msg),
             button::icon(icon::from_name("media-skip-forward-symbolic").size(16).symbolic(true))
-                .on_press(Message::MediaNext)
-                .padding(4),
+                .on_press(Message::MediaNext),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -218,19 +215,19 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     let grid_row_1 = row![
         split_tile(
             "network-wireless-symbolic",
-            fl!("wifi"),
+            if app.network_available { fl!("wifi") } else { "Unavailable".to_string() },
             app.nm_state.wifi_enabled,
             app.network_available,
             Message::ToggleWifi(!app.nm_state.wifi_enabled),
-            Some(Message::Navigate(AppView::WifiDetails)),
+            if app.network_available { Some(Message::Navigate(AppView::WifiDetails)) } else { None },
         ),
         split_tile(
             "bluetooth-active-symbolic",
-            fl!("bluetooth"),
+            if app.bluetooth_available { fl!("bluetooth") } else { "Unavailable".to_string() },
             app.bluetooth_enabled,
             app.bluetooth_available,
             Message::ToggleBluetooth(!app.bluetooth_enabled),
-            Some(Message::Navigate(AppView::BluetoothDetails)),
+            if app.bluetooth_available { Some(Message::Navigate(AppView::BluetoothDetails)) } else { None },
         ),
     ]
     .spacing(4)
@@ -247,11 +244,11 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         ),
         split_tile(
             "network-vpn-symbolic",
-            fl!("vpn"),
+            if app.network_available { fl!("vpn") } else { "Unavailable".to_string() },
             app.vpn_active,
             app.network_available,
             Message::ToggleVpn(!app.vpn_active),
-            Some(Message::Navigate(AppView::VpnDetails)),
+            if app.network_available { Some(Message::Navigate(AppView::VpnDetails)) } else { None },
         ),
     ]
     .spacing(4)
@@ -260,7 +257,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     let grid_row_3 = row![
         split_tile(
             "microphone-sensitivity-muted-symbolic",
-            fl!("global-mute"),
+            if app.sound_available { fl!("global-mute") } else { "Unavailable".to_string() },
             app.global_mute,
             app.sound_available,
             Message::ToggleGlobalMute(!app.global_mute),
@@ -302,19 +299,28 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         "audio-volume-high-symbolic"
     };
 
-    let volume_row = row![
+    let mut volume_row = row![
         button::icon(icon::from_name(volume_icon).size(20).symbolic(true))
             .on_press(Message::ToggleGlobalMute(!app.global_mute))
-            .padding(4),
+            .padding(4)
+            .width(Length::Fixed(28.0)),
         slider(0..=app.config.max_volume, app.volume, Message::SetVolume)
             .width(Length::Fill),
-        button::icon(icon::from_name("go-next-symbolic").size(16).symbolic(true))
-            .on_press(Message::Navigate(AppView::AudioDetails))
-            .padding(4),
-    ]
-    .spacing(spacing.space_s)
-    .align_y(Alignment::Center)
-    .padding([0, spacing.space_xxs]);
+    ];
+    if app.sound_available {
+        volume_row = volume_row.push(
+            button::icon(icon::from_name("go-next-symbolic").size(16).symbolic(true))
+                .on_press(Message::Navigate(AppView::AudioDetails))
+                .padding(4)
+                .width(Length::Fixed(24.0))
+        );
+    } else {
+        volume_row = volume_row.push(Space::new().width(Length::Fixed(24.0)));
+    }
+    let volume_row = volume_row
+        .spacing(spacing.space_s)
+        .align_y(Alignment::Center)
+        .padding([0, spacing.space_xxs]);
 
     // Screen brightness with icon
     let brightness_icon = if app.brightness < 33 {
@@ -326,9 +332,12 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     };
 
     let brightness_row = row![
-        icon::from_name(brightness_icon).size(20).symbolic(true),
+        container(icon::from_name(brightness_icon).size(20).symbolic(true))
+            .padding(4)
+            .width(Length::Fixed(28.0)),
         slider(0..=100, app.brightness, Message::SetBrightness)
             .width(Length::Fill),
+        Space::new().width(Length::Fixed(24.0)),
     ]
     .spacing(spacing.space_s)
     .align_y(Alignment::Center)
@@ -338,16 +347,24 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     let kbd_icon = "keyboard-brightness-symbolic";
 
     let kbd_brightness_row = row![
-        icon::from_name(kbd_icon).size(20).symbolic(true),
+        container(icon::from_name(kbd_icon).size(20).symbolic(true))
+            .padding(4)
+            .width(Length::Fixed(28.0)),
         slider(0..=100, app.kbd_brightness, Message::SetKbdBrightness)
             .width(Length::Fill),
+        Space::new().width(Length::Fixed(24.0)),
     ]
     .spacing(spacing.space_s)
     .align_y(Alignment::Center)
     .padding([0, spacing.space_xxs]);
 
-    let section_b = column![volume_row, brightness_row, kbd_brightness_row]
-        .spacing(spacing.space_xxs);
+    let mut section_b = column![volume_row].spacing(spacing.space_xxs);
+    if app.max_brightness > 0 {
+        section_b = section_b.push(brightness_row);
+    }
+    if app.max_kbd_brightness > 0 {
+        section_b = section_b.push(kbd_brightness_row);
+    }
 
     // ── Section C: Footer ────────────────────────────────────────────────
 
@@ -381,31 +398,31 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         )
     };
 
-    let battery_info = row![
-        icon::from_name(battery_icon).size(16).symbolic(true),
-        text::caption(battery_text),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
+    let battery_info: Element<'_, Message> = if app.has_battery {
+        row![
+            icon::from_name(battery_icon).size(16).symbolic(true),
+            text::caption(battery_text),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+    } else {
+        Space::new().width(Length::Fill).into()
+    };
 
     let power_buttons = row![
         button::icon(icon::from_name("preferences-system-symbolic").size(16).symbolic(true))
-            .on_press(Message::OpenSettings)
-            .padding(4),
+            .on_press(Message::OpenSettings(None)),
         Space::new().width(Length::Fill),
         button::icon(icon::from_name("system-lock-screen-symbolic").size(16).symbolic(true))
-            .on_press(Message::LockScreen)
-            .padding(4),
+            .on_press(Message::LockScreen),
         button::icon(icon::from_name("system-log-out-symbolic").size(16).symbolic(true))
-            .on_press(Message::LogOut)
-            .padding(4),
+            .on_press(Message::LogOut),
         button::icon(icon::from_name("system-suspend-symbolic").size(16).symbolic(true))
-            .on_press(Message::Suspend)
-            .padding(4),
+            .on_press(Message::Suspend),
         button::icon(icon::from_name("system-shutdown-symbolic").size(16).symbolic(true))
-            .on_press(Message::PowerOff)
-            .padding(4),
+            .on_press(Message::PowerOff),
     ]
     .spacing(4)
     .align_y(Alignment::Center);

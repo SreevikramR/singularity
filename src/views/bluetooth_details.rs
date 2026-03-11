@@ -34,7 +34,7 @@ pub fn bluetooth_details_view(app: &AppModel) -> Element<'_, Message> {
             }
         });
 
-        for (path, device) in devices_sorted {
+        for (_path, device) in devices_sorted {
             let connected = device.is_connected();
             let status_text = if connected {
                 fl!("connected")
@@ -60,11 +60,7 @@ pub fn bluetooth_details_view(app: &AppModel) -> Element<'_, Message> {
             )
             .width(Length::Fill)
             .padding(8)
-            .on_press(if connected {
-                Message::DisconnectBluetoothDevice(path.clone())
-            } else {
-                Message::ConnectBluetoothDevice(path.clone())
-            })
+            .on_press(Message::OpenSettings(Some("bluetooth".to_string())))
             .class(cosmic::theme::Button::Standard);
 
             device_list = device_list.push(dev_row);

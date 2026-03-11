@@ -75,6 +75,7 @@ pub fn wifi_details_view(app: &AppModel) -> Element<'_, Message> {
             )
             .width(Length::Fill)
             .padding(8)
+            .on_press(Message::OpenSettings(Some("wifi".to_string())))
             .class(cosmic::theme::Button::Standard);
 
             network_list = network_list.push(net_row);
