@@ -423,7 +423,7 @@ impl cosmic::Application for AppModel {
     // ── Subscriptions ────────────────────────────────────────────────────
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        Subscription::batch(vec![
+        let mut subs = vec![
             // Config watcher
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
@@ -442,7 +442,14 @@ impl cosmic::Application for AppModel {
             Subscription::run_with("singularity-sound", get_sound_watch).map(Message::Sound),
             // Bluetooth
             bluetooth::bluetooth_subscription(3u8).map(Message::BluetoothEvent),
-        ])
+        ];
+        if self.popup.is_some() {
+            subs.push(
+                cosmic::iced::time::every(std::time::Duration::from_secs(4))
+                    .map(|_| Message::Refresh)
+            );
+        }
+        Subscription::batch(subs)
     }
 
     // ── Message handling ─────────────────────────────────────────────────
@@ -475,10 +482,12 @@ impl cosmic::Application for AppModel {
             }
             Message::ToggleVpn(v) => self.vpn_active = v,
             Message::ToggleGlobalMute(_v) => {
+                let _ = std::process::Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]).spawn();
                 self.sound.toggle_sink_mute();
                 self.global_mute = self.sound.sink_mute;
             }
             Message::ToggleSourceMute => {
+                let _ = std::process::Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]).spawn();
                 self.sound.toggle_source_mute();
             }
             Message::CyclePowerProfile => {
@@ -591,14 +600,16 @@ impl cosmic::Application for AppModel {
             // ── D-Bus: Network Manager ───────────────────────────────
             Message::NetworkManager(event) => {
                 match event {
-                    NmEvent::Init { sender, state, .. } => {
+                    NmEvent::Init { sender, state, conn } => {
                         self.network_available = true;
                         self.nm_sender = Some(sender);
                         self.nm_state = state;
+                        self.conn = Some(conn);
                         self.vpn_active = self.nm_state.active_conns.iter().any(|c| matches!(c, cosmic_settings_network_manager_subscription::ActiveConnectionInfo::Vpn { .. }));
                         if let Some(ref sender) = self.nm_sender {
                             let _ = sender.unbounded_send(NmRequest::Reload);
                         }
+                        return self.update(Message::Refresh);
                     }
                     NmEvent::RequestResponse { state, success, req } => {
                         if !success {
@@ -660,6 +671,16 @@ impl cosmic::Application for AppModel {
             // ── D-Bus: Sound/Audio ───────────────────────────────────────────
             Message::Sound(msg) => {
                 self.sound_available = true;
+                // Trigger cosmic-osd via wpctl which emits the correct DBus/Pulse events on apply (respecting debounce)
+                match &msg {
+                    cosmic_settings_sound_subscription::Message::SinkVolumeApply(_) => {
+                        let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{}%", self.volume)]).spawn();
+                    }
+                    cosmic_settings_sound_subscription::Message::SourceVolumeApply(_) => {
+                        let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{}%", self.sound.source_volume)]).spawn();
+                    }
+                    _ => {}
+                }
                 let task = self.sound.update(msg).map(|m| cosmic::Action::App(Message::Sound(m)));
                 self.volume = self.sound.sink_volume;
                 self.global_mute = self.sound.sink_mute;

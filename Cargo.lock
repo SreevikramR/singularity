@@ -5093,6 +5093,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "secure-string",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -150,18 +150,27 @@ pub fn load_vpns(conn: zbus::Connection) -> Task<crate::app::Message> {
                 let settings = conn.get_settings().await.ok()?;
 
                 let connection = settings.get("connection")?;
+                
+                let get_string = |val: &zbus::zvariant::Value| -> Option<String> {
+                    if let Ok(s) = val.downcast_ref::<String>() {
+                        Some(s.clone())
+                    } else if let Ok(s) = String::try_from(val.clone()) {
+                        Some(s)
+                    } else if let Ok(s) = zbus::zvariant::Str::try_from(val).map(|s| s.to_string()) {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                };
 
-                match connection
-                    .get("type")?
-                    .downcast_ref::<String>()
-                    .ok()?
-                    .as_str()
+                let conn_type = get_string(connection.get("type")?)?;
+                match conn_type.as_str()
                 {
                     "vpn" => (),
 
                     "wireguard" => {
-                        let id = connection.get("id")?.downcast_ref::<String>().ok()?;
-                        let uuid = connection.get("uuid")?.downcast_ref::<String>().ok()?;
+                        let id = get_string(connection.get("id")?)?;
+                        let uuid = get_string(connection.get("uuid")?)?;
                         return Some((Arc::from(uuid), ConnectionSettings::Wireguard { id }));
                     }
 
@@ -169,8 +178,8 @@ pub fn load_vpns(conn: zbus::Connection) -> Task<crate::app::Message> {
                 }
 
                 let vpn = settings.get("vpn")?;
-                let id = connection.get("id")?.downcast_ref::<String>().ok()?;
-                let uuid = connection.get("uuid")?.downcast_ref::<String>().ok()?;
+                let id = get_string(connection.get("id")?)?;
+                let uuid = get_string(connection.get("uuid")?)?;
 
                 let (connection_type, username, password_flag) = vpn
                     .get("data")
@@ -179,7 +188,7 @@ pub fn load_vpns(conn: zbus::Connection) -> Task<crate::app::Message> {
                         let (mut connection_type, mut password_flag) = (None, None);
                         let mut username = vpn
                             .get("user-name")
-                            .and_then(|u| u.downcast_ref::<String>().ok());
+                            .and_then(|u| get_string(u));
                         if dict
                             .get::<String, String>(&String::from("connection-type"))
                             .ok()
@@ -292,4 +301,25 @@ pub fn system_conn() -> Task<crate::app::Message> {
                 crate::app::Message::NetworkManagerConnect,
             )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vpn_connection_settings_password_flag() {
+        let mut settings = VpnConnectionSettings::default();
+        
+        // No connection type
+        assert_eq!(settings.password_flag(), None);
+
+        // Connection type without password flag
+        settings.connection_type = Some(ConnectionType::Password);
+        assert_eq!(settings.password_flag(), None);
+
+        // Connection type with password flag
+        settings.password_flag = Some(PasswordFlag::AgentOwned);
+        assert_eq!(settings.password_flag(), Some(PasswordFlag::AgentOwned));
+    }
 }
