@@ -403,6 +403,7 @@ impl cosmic::Application for AppModel {
         self.core
             .applet
             .button_from_element(icons_row, true)
+            .width(cosmic::iced::Length::Shrink)
             .on_press(Message::TogglePopup)
             .into()
     }
