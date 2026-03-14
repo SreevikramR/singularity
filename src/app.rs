@@ -376,17 +376,7 @@ impl cosmic::Application for AppModel {
 
         let mut battery_icon = None;
         if self.has_battery {
-            if self.battery_charging {
-                battery_icon = Some("battery-full-charging-symbolic");
-            } else if self.battery_percent > 80.0 {
-                battery_icon = Some("battery-full-symbolic");
-            } else if self.battery_percent > 50.0 {
-                battery_icon = Some("battery-good-symbolic");
-            } else if self.battery_percent > 20.0 {
-                battery_icon = Some("battery-low-symbolic");
-            } else {
-                battery_icon = Some("battery-caution-symbolic");
-            }
+            battery_icon = Some("battery-symbolic");
         }
 
         let mut icons_row = cosmic::iced::widget::row![
@@ -400,11 +390,11 @@ impl cosmic::Application for AppModel {
             icons_row = icons_row.push(cosmic::widget::icon::from_name(bat_icon).size(16).symbolic(true));
         }
 
-        self.core
-            .applet
-            .button_from_element(icons_row, true)
-            .on_press(Message::TogglePopup)
-            .into()
+        let button = cosmic::widget::button::custom(icons_row)
+            .class(cosmic::theme::Button::AppletIcon)
+            .on_press_down(Message::TogglePopup);
+
+        cosmic::widget::autosize::autosize(button, cosmic::widget::Id::unique()).into()
     }
 
     // ── Popup: route to active view ──────────────────────────────────────
