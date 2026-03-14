@@ -312,7 +312,7 @@ impl BluerSessionState {
                             ),
                         ))
                         .await;
-                    let pin_code = fastrand::u32(0..999999);
+                    let pin_code = fastrand::u32(0..999_999);
                     Ok(format!("{pin_code:06}"))
                 })
             })),
@@ -348,7 +348,7 @@ impl BluerSessionState {
                             ),
                         ))
                         .await;
-                    let pin_code = fastrand::u32(0..999999);
+                    let pin_code = fastrand::u32(0..999_999);
                     Ok(pin_code)
                 })
             })),
@@ -528,7 +528,7 @@ impl BluerSessionState {
 
         spawn(async move {
             if adapters_clone.is_empty() { return; }
-            let adapter_clone = adapters_clone[0].clone(); // Only process discovery events for the main adapter for simplicity, as scanning runs across all generally in most UI, but for tracking change streams one is usually sufficient.
+            let main_adapter = adapters_clone[0].clone(); // Only process discovery events for the main adapter for simplicity, as scanning runs across all generally in most UI, but for tracking change streams one is usually sufficient.
             
             let mut is_powered = false;
             for a in &adapters_clone {
@@ -551,7 +551,7 @@ impl BluerSessionState {
                         let mut interval = tokio::time::interval(Duration::from_secs(10));
                         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         let Ok(mut change_stream) =
-                            adapter_clone.discover_devices_with_changes().await
+                            main_adapter.discover_devices_with_changes().await
                         else {
                             tick(&mut interval).await;
                             return;
@@ -573,7 +573,7 @@ impl BluerSessionState {
                                             if !devices.iter().any(|d| d.address == address) =>
                                         {
                                             devices =
-                                                build_device_list(Vec::new(), &adapter_clone).await;
+                                                build_device_list(Vec::new(), &main_adapter).await;
                                             for d in devices.iter().filter(|d| {
                                                 d.paired_and_trusted()
                                                     && !matches!(
@@ -804,7 +804,7 @@ pub fn bluetooth_subscription<I: 'static + Hash + Copy + Send + Sync + Debug>(
 
                 retry_count = retry_count.saturating_add(1);
                 tokio::time::sleep(Duration::from_millis(
-                    2_u64.saturating_pow(retry_count).min(68719476734),
+                    2_u64.saturating_pow(retry_count).min(68_719_476_734),
                 ))
                 .await;
             };

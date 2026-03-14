@@ -156,10 +156,8 @@ pub fn load_vpns(conn: zbus::Connection) -> Task<crate::app::Message> {
                         Some(s.clone())
                     } else if let Ok(s) = String::try_from(val.clone()) {
                         Some(s)
-                    } else if let Ok(s) = zbus::zvariant::Str::try_from(val).map(|s| s.to_string()) {
-                        Some(s)
                     } else {
-                        None
+                        zbus::zvariant::Str::try_from(val).map(|s| s.to_string()).ok()
                     }
                 };
 
@@ -221,9 +219,9 @@ pub fn load_vpns(conn: zbus::Connection) -> Task<crate::app::Message> {
                     Arc::from(uuid),
                     ConnectionSettings::Vpn(VpnConnectionSettings {
                         id,
+                        username,
                         connection_type,
                         password_flag,
-                        username,
                     }),
                 ))
             })

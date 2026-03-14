@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::subscriptions::mpris::{self, MprisUpdate, PlayerStatus};
 use crate::views;
 use crate::bluetooth::{self, BluerState, BluerRequest, BluerEvent, BluerAgentEvent, BluerDevice};
-use crate::network::*;
+use crate::network::{NewConnectionState, ConnectionSettings, RequestedVpn};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{window, Limits, Subscription};
 
@@ -505,10 +505,9 @@ impl cosmic::Application for AppModel {
                 if self.global_mute {
                     let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", "0%"]).spawn();
                     return self.sound.set_source_volume(0).map(|m| cosmic::Action::App(Message::Sound(m)));
-                } else {
-                    let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", "100%"]).spawn();
-                    return self.sound.set_source_volume(100).map(|m| cosmic::Action::App(Message::Sound(m)));
                 }
+                let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", "100%"]).spawn();
+                return self.sound.set_source_volume(100).map(|m| cosmic::Action::App(Message::Sound(m)));
             }
             Message::ToggleSourceMute => {
                 let _ = std::process::Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]).spawn();
@@ -850,9 +849,8 @@ impl cosmic::Application for AppModel {
                 
                 if let Some(p) = self.popup.take() {
                     return destroy_popup(p);
-                } else {
-                    return Task::perform(async {}, |_| cosmic::Action::App(Message::ExecuteScreenshot));
                 }
+                return Task::perform(async {}, |()| cosmic::Action::App(Message::ExecuteScreenshot));
             }
             Message::ExecuteScreenshot => {
                 let cmd = if self.config.screenshot_command.is_empty() {

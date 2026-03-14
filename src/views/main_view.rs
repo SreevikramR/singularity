@@ -100,7 +100,7 @@ fn split_tile<'a>(
 
 // ── Media card ───────────────────────────────────────────────────────────────
 
-fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> {
+fn media_card<'a>(player_status: Option<&PlayerStatus>) -> Element<'a, Message> {
     // Extract title and artist if available
     let (title, artist) = match player_status {
         Some(status) => {
@@ -113,8 +113,7 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
                 .artists
                 .as_ref()
                 .and_then(|a| a.first())
-                .map(|a| a.to_string())
-                .unwrap_or_else(|| "Unknown Artist".to_string());
+                .map_or_else(|| "Unknown Artist".to_string(), |a| a.to_string());
             (t, a)
         }
         None => (fl!("no-media"), String::new()),
@@ -152,8 +151,7 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
     // Transport controls — always visible, horizontally centered
     let is_playing = player_status
         .as_ref()
-        .map(|s| matches!(s.status, PlaybackStatus::Playing))
-        .unwrap_or(false);
+        .is_some_and(|s| matches!(s.status, PlaybackStatus::Playing));
 
     let play_pause_icon = if is_playing {
         "media-playback-pause-symbolic"
@@ -161,10 +159,10 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
         "media-playback-start-symbolic"
     };
 
-    let can_go_previous = player_status.as_ref().map(|s| s.can_go_previous).unwrap_or(false);
-    let can_play = player_status.as_ref().map(|s| s.can_play).unwrap_or(false);
-    let can_pause = player_status.as_ref().map(|s| s.can_pause).unwrap_or(false);
-    let can_go_next = player_status.as_ref().map(|s| s.can_go_next).unwrap_or(false);
+    let can_go_previous = player_status.as_ref().is_some_and(|s| s.can_go_previous);
+    let can_play = player_status.as_ref().is_some_and(|s| s.can_play);
+    let can_pause = player_status.as_ref().is_some_and(|s| s.can_pause);
+    let can_go_next = player_status.as_ref().is_some_and(|s| s.can_go_next);
 
     let mut prev_btn = button::icon(icon::from_name("media-skip-backward-symbolic").size(16).symbolic(true));
     if can_go_previous {
@@ -294,7 +292,7 @@ pub fn main_view<'a>(app: &'a AppModel) -> Element<'a, Message> {
         .spacing(4)
         .width(Length::FillPortion(1));
 
-    let media = container(media_card(&app.player_status))
+    let media = container(media_card(app.player_status.as_ref()))
         .width(Length::FillPortion(1));
 
     let section_a = row![grid, media]
