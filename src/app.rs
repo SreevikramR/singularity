@@ -535,10 +535,12 @@ impl cosmic::Application for AppModel {
             }
             Message::SetVolume(v) => {
                 self.volume = v;
+                let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{}%", v)]).spawn();
                 return self.sound.set_sink_volume(v)
                     .map(|msg| cosmic::Action::App(Message::Sound(msg)));
             }
             Message::SetSourceVolume(v) => {
+                let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{}%", v)]).spawn();
                 return self.sound.set_source_volume(v)
                     .map(|msg| cosmic::Action::App(Message::Sound(msg)));
             }
@@ -695,16 +697,6 @@ impl cosmic::Application for AppModel {
             // ── D-Bus: Sound/Audio ───────────────────────────────────────────
             Message::Sound(msg) => {
                 self.sound_available = true;
-                // Trigger cosmic-osd via wpctl which emits the correct DBus/Pulse events on apply (respecting debounce)
-                match &msg {
-                    cosmic_settings_sound_subscription::Message::SinkVolumeApply(_) => {
-                        let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{}%", self.volume)]).spawn();
-                    }
-                    cosmic_settings_sound_subscription::Message::SourceVolumeApply(_) => {
-                        let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{}%", self.sound.source_volume)]).spawn();
-                    }
-                    _ => {}
-                }
                 let task = self.sound.update(msg).map(|m| cosmic::Action::App(Message::Sound(m)));
                 self.volume = self.sound.sink_volume;
                 self.global_mute = self.sound.sink_mute;

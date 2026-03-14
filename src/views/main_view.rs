@@ -8,7 +8,8 @@
 use crate::app::{AppModel, AppView, Message, PowerProfile};
 use crate::fl;
 use crate::subscriptions::mpris::PlayerStatus;
-use cosmic::iced::widget::{column, container, row};
+use cosmic::iced::widget::{column, container, row, stack};
+use cosmic::iced::widget::container::Style;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{button, icon, slider, text};
@@ -214,7 +215,7 @@ fn media_card<'a>(player_status: &Option<PlayerStatus>) -> Element<'a, Message> 
 
 // ── Main view assembly ───────────────────────────────────────────────────────
 
-pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
+pub fn main_view<'a>(app: &'a AppModel) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
 
     // ── Section A: Grid + Media ──────────────────────────────────────────
@@ -313,13 +314,38 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         "audio-volume-high-symbolic"
     };
 
+    let notch_color = theme::active().cosmic().accent.base;
+    
+    let volume_slider_with_notch: Element<'a, Message> = stack![
+        slider(0..=app.config.max_volume, app.volume, Message::SetVolume)
+            .width(Length::Fill),
+        row![
+            Space::new().width(Length::FillPortion(100)),
+            container(Space::new())
+                .width(Length::Fixed(2.0))
+                .height(Length::Fixed(12.0))
+                .style(move |_theme: &_| {
+                    Style {
+                        background: Some(cosmic::iced::Background::Color(notch_color.into())),
+                        ..Default::default()
+                    }
+                }),
+            Space::new().width(Length::FillPortion((app.config.max_volume - 100) as u16)),
+        ]
+        .width(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0, 8]) // Slider handle horizontal padding
+    ].into();
+
     let mut volume_row = row![
         button::icon(icon::from_name(volume_icon).size(20).symbolic(true))
             .on_press(Message::ToggleGlobalMute(!app.global_mute))
             .padding(4)
             .width(Length::Fixed(28.0)),
-        slider(0..=app.config.max_volume, app.volume, Message::SetVolume)
-            .width(Length::Fill),
+        volume_slider_with_notch,
+        cosmic::iced::widget::container(text(&app.sound.sink_volume_text).size(14))
+            .width(Length::Fixed(40.0))
+            .align_x(Alignment::End)
     ];
     if app.sound_available {
         volume_row = volume_row.push(
@@ -385,13 +411,36 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         "microphone-sensitivity-high-symbolic"
     };
 
+    let mic_slider_with_notch: Element<'a, Message> = stack![
+        slider(0..=app.max_source_volume, app.sound.source_volume, Message::SetSourceVolume)
+            .width(Length::Fill),
+        row![
+            Space::new().width(Length::FillPortion(100)),
+            container(Space::new())
+                .width(Length::Fixed(2.0))
+                .height(Length::Fixed(12.0))
+                .style(move |_theme: &_| {
+                    Style {
+                        background: Some(cosmic::iced::Background::Color(notch_color.into())),
+                        ..Default::default()
+                    }
+                }),
+            Space::new().width(Length::FillPortion((app.max_source_volume - 100).max(1) as u16)),
+        ]
+        .width(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0, 8]) // Slider handle horizontal padding
+    ].into();
+
     let mic_row = row![
         button::icon(icon::from_name(mic_icon).size(20).symbolic(true))
             .on_press(Message::ToggleSourceMute)
             .padding(4)
             .width(Length::Fixed(28.0)),
-        slider(0..=app.max_source_volume, app.sound.source_volume, Message::SetSourceVolume)
-            .width(Length::Fill),
+        mic_slider_with_notch,
+        cosmic::iced::widget::container(text(&app.sound.source_volume_text).size(14))
+            .width(Length::Fixed(40.0))
+            .align_x(Alignment::End),
         Space::new().width(Length::Fixed(24.0)),
     ]
     .spacing(spacing.space_s)
