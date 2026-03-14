@@ -136,10 +136,30 @@ fn device_row(device: &crate::bluetooth::BluerDevice) -> Element<'static, Messag
     .width(Length::Fill);
 
     if let Some(bat) = device.battery_percent {
+        let level = if bat > 95 {
+            100
+        } else if bat > 80 {
+            90
+        } else if bat > 65 {
+            80
+        } else if bat > 35 {
+            50
+        } else if bat > 20 {
+            35
+        } else if bat > 14 {
+            20
+        } else if bat > 9 {
+            10
+        } else if bat > 5 {
+            5
+        } else {
+            0
+        };
+        let bat_icon = format!("cosmic-applet-battery-level-{level}-symbolic");
         row_content = row_content.push(
             row![
                 text::caption(format!("{}%", bat)),
-                icon::from_name("battery-symbolic").size(16).symbolic(true),
+                icon::from_name(bat_icon).size(16).symbolic(true),
             ]
             .spacing(4)
             .align_y(Alignment::Center)

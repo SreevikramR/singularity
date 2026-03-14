@@ -373,6 +373,33 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     .padding([0, spacing.space_xxs]);
 
     let mut section_b = column![volume_row].spacing(spacing.space_xxs);
+
+    // Microphone slider
+    let mic_icon = if app.sound.source_volume == 0 || app.sound.source_mute {
+        "microphone-sensitivity-muted-symbolic"
+    } else if app.sound.source_volume < 33 {
+        "microphone-sensitivity-low-symbolic"
+    } else if app.sound.source_volume < 66 {
+        "microphone-sensitivity-medium-symbolic"
+    } else {
+        "microphone-sensitivity-high-symbolic"
+    };
+
+    let mic_row = row![
+        button::icon(icon::from_name(mic_icon).size(20).symbolic(true))
+            .on_press(Message::ToggleSourceMute)
+            .padding(4)
+            .width(Length::Fixed(28.0)),
+        slider(0..=app.max_source_volume, app.sound.source_volume, Message::SetSourceVolume)
+            .width(Length::Fill),
+        Space::new().width(Length::Fixed(24.0)),
+    ]
+    .spacing(spacing.space_s)
+    .align_y(Alignment::Center)
+    .padding([0, spacing.space_xxs]);
+
+    section_b = section_b.push(mic_row);
+
     if app.max_brightness > 0 {
         section_b = section_b.push(brightness_row);
     }
@@ -381,18 +408,6 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
     }
 
     // ── Section C: Footer ────────────────────────────────────────────────
-
-    let battery_icon = if app.battery_charging {
-        "battery-full-charging-symbolic"
-    } else if app.battery_percent > 80.0 {
-        "battery-full-symbolic"
-    } else if app.battery_percent > 50.0 {
-        "battery-good-symbolic"
-    } else if app.battery_percent > 20.0 {
-        "battery-low-symbolic"
-    } else {
-        "battery-caution-symbolic"
-    };
 
     let battery_text = if app.battery_charging && app.battery_percent >= 99.0 {
         fl!("fully-charged")
@@ -428,7 +443,7 @@ pub fn main_view<'a>(app: &AppModel) -> Element<'a, Message> {
         format!("{:.0}% — {}", app.battery_percent, fl!("on-battery"))
     };
 
-    let battery_info: Element<'_, Message> = if app.has_battery {
+    let battery_info: Element<'_, Message> = if let Some(battery_icon) = app.battery_icon_name() {
         row![
             icon::from_name(battery_icon).size(16).symbolic(true),
             text::caption(battery_text),

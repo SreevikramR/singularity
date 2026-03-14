@@ -143,6 +143,36 @@ pub struct AppModel {
     pub pending_screenshot: bool,
 }
 
+impl AppModel {
+    pub fn battery_icon_name(&self) -> Option<String> {
+        if !self.has_battery {
+            return None;
+        }
+        let level = if self.battery_percent > 95.0 {
+            100
+        } else if self.battery_percent > 80.0 {
+            90
+        } else if self.battery_percent > 65.0 {
+            80
+        } else if self.battery_percent > 35.0 {
+            50
+        } else if self.battery_percent > 20.0 {
+            35
+        } else if self.battery_percent > 14.0 {
+            20
+        } else if self.battery_percent > 9.0 {
+            10
+        } else if self.battery_percent > 5.0 {
+            5
+        } else {
+            0
+        };
+
+        let charging = if self.battery_charging { "charging-" } else { "" };
+        Some(format!("cosmic-applet-battery-level-{level}-{charging}symbolic"))
+    }
+}
+
 impl Default for AppModel {
     fn default() -> Self {
         Self {
@@ -374,10 +404,7 @@ impl cosmic::Application for AppModel {
             }
         }
 
-        let mut battery_icon = None;
-        if self.has_battery {
-            battery_icon = Some("battery-symbolic");
-        }
+        let battery_icon = self.battery_icon_name();
 
         let mut icons_row = cosmic::iced::widget::row![
             cosmic::widget::icon::from_name(volume_icon).size(16).symbolic(true),
@@ -475,6 +502,13 @@ impl cosmic::Application for AppModel {
                 let _ = std::process::Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]).spawn();
                 self.sound.toggle_sink_mute();
                 self.global_mute = self.sound.sink_mute;
+                if self.global_mute {
+                    let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", "0%"]).spawn();
+                    return self.sound.set_source_volume(0).map(|m| cosmic::Action::App(Message::Sound(m)));
+                } else {
+                    let _ = std::process::Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SOURCE@", "100%"]).spawn();
+                    return self.sound.set_source_volume(100).map(|m| cosmic::Action::App(Message::Sound(m)));
+                }
             }
             Message::ToggleSourceMute => {
                 let _ = std::process::Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]).spawn();
