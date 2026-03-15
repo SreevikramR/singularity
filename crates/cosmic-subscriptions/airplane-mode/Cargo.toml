@@ -1,0 +1,14 @@
+[package]
+name = "cosmic-settings-airplane-mode-subscription"
+version = "1.0.7"
+edition = "2024"
+license = "MPL-2.0"
+rust-version = "1.90"
+publish = true
+
+[dependencies]
+futures = "0.3.32"
+iced_futures = { git = "https://github.com/pop-os/libcosmic", rev = "1dc9aa37ed8b8670217f7b9f82d40b3476204ad1" }
+log = "0.4.29"
+rustix = "1.1.3"
+tokio = "1.49.0"
