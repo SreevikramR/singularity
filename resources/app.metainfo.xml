@@ -5,6 +5,9 @@
   <project_license>GPL-3.0-only</project_license>
   <name>Singularity</name>
   <summary>Unified quick-settings panel applet for COSMIC</summary>
+  <description>
+    <p>A unified quick-settings control panel applet for the COSMIC desktop environment</p>
+  </description>
   <icon type="remote" width="64" height="64" scale="1">
     https://github.com/sreevikramr/singularity/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
   </icon>
